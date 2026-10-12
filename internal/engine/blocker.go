@@ -25,9 +25,10 @@ const (
 
 const (
 	modeKey     = "blocking_mode"
-	releaseLag  = time.Minute     // margin around window edges when scheduling a release
-	maxPassAge  = 2 * time.Minute // older passes are catch-up after downtime: never block on them
-	maxClockGap = 2 * time.Minute // controller vs. this PC clock; beyond it we do not trust our timing
+	releaseLag  = time.Minute      // keep the block a little past the window end
+	releaseLead = 30 * time.Minute // unblock this long before the person's next window starts
+	maxPassAge  = 2 * time.Minute  // older passes are catch-up after downtime: never block on them
+	maxClockGap = 2 * time.Minute  // controller vs. this PC clock; beyond it we do not trust our timing
 )
 
 // PERCo operator actions on an employee (verified on site 2026-10-12).
@@ -120,7 +121,7 @@ func (b *Blocker) close(r *store.Block, state, note string) {
 	}
 }
 
-// restoreFor is when a block taken at `at` in meal window m is released: just before the person's next
+// restoreFor is when a block taken at `at` in meal window m is released: 30 minutes before the person's next
 // window starts (never before this window ends), or at midnight when they have no later window today.
 func (b *Blocker) restoreFor(m meals.Meal, userID int64, at time.Time) (time.Time, bool) {
 	end, ok := m.EndAt(at)
@@ -130,7 +131,7 @@ func (b *Blocker) restoreFor(m meals.Meal, userID int64, at time.Time) (time.Tim
 	day := dayStart(at)
 	restore := day.Add(24 * time.Hour)
 	if begin, ok := meals.NextBegin(b.meals(), end, b.st.StaffTemplates(userID)); ok {
-		restore = day.Add(time.Duration(begin)*time.Second - releaseLag)
+		restore = day.Add(time.Duration(begin)*time.Second - releaseLead)
 	}
 	if floor := day.Add(time.Duration(end)*time.Second + releaseLag); restore.Before(floor) {
 		restore = floor

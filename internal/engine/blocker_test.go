@@ -120,20 +120,20 @@ func TestBlockAndReleaseBeforeNextWindow(t *testing.T) {
 	if !r.api.blocked[900] || r.state(t, 900).State != store.BlockActive {
 		t.Fatal("first breakfast pass must block")
 	}
-	if got := r.state(t, 900).RestoreAt; got != "2026-10-12 11:59:00" {
-		t.Fatalf("restore at %s, want next window (lunch 12:00) - 1 min", got)
+	if got := r.state(t, 900).RestoreAt; got != "2026-10-12 11:30:00" {
+		t.Fatalf("restore at %s, want next window (lunch 12:00) - 30 min", got)
 	}
-	for _, h := range []int{8, 9, 11} { // window end 08:15 passes: still blocked
+	for _, h := range []int{8, 9, 10} { // window end 08:15 passes: still blocked
 		r.now = time.Date(2026, 10, 12, h, 20, 0, 0, tz)
 		r.tick(t)
 		if !r.api.blocked[900] {
 			t.Fatalf("released at %02d:20, before the next window", h)
 		}
 	}
-	r.now = time.Date(2026, 10, 12, 11, 59, 0, 0, tz)
+	r.now = time.Date(2026, 10, 12, 11, 30, 0, 0, tz)
 	r.tick(t)
 	if r.api.blocked[900] || r.state(t, 900).State != store.BlockReleased {
-		t.Fatal("must be released just before the next window")
+		t.Fatal("must be released 30 min before the next window")
 	}
 	// Lunch is a new window: blocked again.
 	r.now = time.Date(2026, 10, 12, 12, 10, 0, 0, tz)
@@ -253,7 +253,7 @@ func TestOperatorBlocksOnTop(t *testing.T) {
 func TestReleaseRetriesOnError(t *testing.T) {
 	r := newRig(t, ModeOn)
 	r.pass(900)
-	r.now = time.Date(2026, 10, 12, 11, 59, 0, 0, tz)
+	r.now = time.Date(2026, 10, 12, 11, 30, 0, 0, tz)
 	r.api.fail = errors.New("timeout")
 	r.tick(t)
 	s := r.state(t, 900)
@@ -310,8 +310,8 @@ func TestNextWindowOnlyAmongOwnTemplates(t *testing.T) {
 	// Breakfast (3) and dinner (5) only: no lunch, so the block holds until dinner.
 	r.st.UpsertStaff(store.Staff{ID: 900, FIO: "Тест", Templates: []int{3, 5}}, "")
 	r.pass(900)
-	if got := r.state(t, 900).RestoreAt; got != "2026-10-12 18:29:00" {
-		t.Fatalf("restore at %s, want dinner 18:30 - 1 min", got)
+	if got := r.state(t, 900).RestoreAt; got != "2026-10-12 18:00:00" {
+		t.Fatalf("restore at %s, want dinner 18:30 - 30 min", got)
 	}
 }
 
