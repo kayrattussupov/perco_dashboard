@@ -25,7 +25,7 @@ const (
 
 const (
 	modeKey     = "blocking_mode"
-	releaseLag  = time.Minute     // keep the block a little past the window end
+	releaseLag  = time.Minute     // margin around window edges when scheduling a release
 	maxPassAge  = 2 * time.Minute // older passes are catch-up after downtime: never block on them
 	maxClockGap = 2 * time.Minute // controller vs. this PC clock; beyond it we do not trust our timing
 )
@@ -48,7 +48,8 @@ type blockAPI interface {
 //   - fail open: any doubt (no link, no meal windows, stale event, clock skew) means no block;
 //   - write-ahead: a block row exists before PERCo is touched, so a crash is recovered on start;
 //   - operator wins: blocks/unblocks done by people in PERCo are never overridden;
-//   - every service block is released by window end, by max_hours, on start, or by "off".
+//   - a block is held after the window until the next window of the employee (or midnight);
+//   - every service block is released by that time, by max_hours, on start, or by "off".
 type Blocker struct {
 	cfg     *config.Config
 	api     blockAPI
@@ -119,6 +120,24 @@ func (b *Blocker) close(r *store.Block, state, note string) {
 	}
 }
 
+// restoreFor is when a block taken at `at` in meal window m is released: just before the person's next
+// window starts (never before this window ends), or at midnight when they have no later window today.
+func (b *Blocker) restoreFor(m meals.Meal, userID int64, at time.Time) (time.Time, bool) {
+	end, ok := m.EndAt(at)
+	if !ok {
+		return time.Time{}, false
+	}
+	day := dayStart(at)
+	restore := day.Add(24 * time.Hour)
+	if begin, ok := meals.NextBegin(b.meals(), end, b.st.StaffTemplates(userID)); ok {
+		restore = day.Add(time.Duration(begin)*time.Second - releaseLag)
+	}
+	if floor := day.Add(time.Duration(end)*time.Second + releaseLag); restore.Before(floor) {
+		restore = floor
+	}
+	return restore, true
+}
+
 // OnPass is called for every newly seen pass. It blocks the employee if this is their first pass
 // in the current meal window and every safety condition holds.
 func (b *Blocker) OnPass(ctx context.Context, ev store.Event, passAt time.Time) {
@@ -143,11 +162,10 @@ func (b *Blocker) OnPass(ctx context.Context, ev store.Event, passAt time.Time) 
 	if !ok {
 		return
 	}
-	end, ok := m.EndAt(passAt)
+	restore, ok := b.restoreFor(m, ev.UserID, passAt)
 	if !ok {
 		return
 	}
-	restore := dayStart(passAt).Add(time.Duration(end)*time.Second + releaseLag)
 	deadline := now.Add(time.Duration(b.cfg.Blocking.MaxHours * float64(time.Hour)))
 	if !now.Before(restore) {
 		return
@@ -285,11 +303,10 @@ func (b *Blocker) followWindow(r *store.Block) {
 	if err != nil {
 		return
 	}
-	end, ok := m.EndAt(created)
+	restore, ok := b.restoreFor(m, r.UserID, created)
 	if !ok {
 		return
 	}
-	restore := dayStart(created).Add(time.Duration(end)*time.Second + releaseLag)
 	if deadline, err := b.parse(r.Deadline); err == nil && restore.After(deadline) {
 		restore = deadline
 	}

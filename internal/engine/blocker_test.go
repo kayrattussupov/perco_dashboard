@@ -68,7 +68,7 @@ func newRig(t *testing.T, mode string) *rig {
 	}
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{}
-	cfg.Blocking.MaxHours = 3
+	cfg.Blocking.MaxHours = 16
 	cfg.Blocking.AdminPIN = "1234"
 	cfg.Blocking.TestUserIDs = []int64{960}
 	r := &rig{api: &fakePERCo{blocked: map[int64]bool{}, active: map[int64]bool{}}, st: st,
@@ -114,24 +114,26 @@ func (r *rig) state(t *testing.T, user int64) store.Block {
 	return store.Block{}
 }
 
-func TestBlockAndReleaseAtWindowEnd(t *testing.T) {
+func TestBlockAndReleaseBeforeNextWindow(t *testing.T) {
 	r := newRig(t, ModeOn)
 	r.pass(900)
 	if !r.api.blocked[900] || r.state(t, 900).State != store.BlockActive {
 		t.Fatal("first breakfast pass must block")
 	}
-	if got := r.state(t, 900).RestoreAt; got != "2026-10-12 08:16:00" {
-		t.Fatalf("restore at %s, want window end 08:15 + 1 min", got)
+	if got := r.state(t, 900).RestoreAt; got != "2026-10-12 11:59:00" {
+		t.Fatalf("restore at %s, want next window (lunch 12:00) - 1 min", got)
 	}
-	r.now = time.Date(2026, 10, 12, 8, 0, 0, 0, tz)
-	r.tick(t)
-	if !r.api.blocked[900] {
-		t.Fatal("released before window end")
+	for _, h := range []int{8, 9, 11} { // window end 08:15 passes: still blocked
+		r.now = time.Date(2026, 10, 12, h, 20, 0, 0, tz)
+		r.tick(t)
+		if !r.api.blocked[900] {
+			t.Fatalf("released at %02d:20, before the next window", h)
+		}
 	}
-	r.now = time.Date(2026, 10, 12, 8, 16, 0, 0, tz)
+	r.now = time.Date(2026, 10, 12, 11, 59, 0, 0, tz)
 	r.tick(t)
 	if r.api.blocked[900] || r.state(t, 900).State != store.BlockReleased {
-		t.Fatal("must be released after window end")
+		t.Fatal("must be released just before the next window")
 	}
 	// Lunch is a new window: blocked again.
 	r.now = time.Date(2026, 10, 12, 12, 10, 0, 0, tz)
@@ -251,7 +253,7 @@ func TestOperatorBlocksOnTop(t *testing.T) {
 func TestReleaseRetriesOnError(t *testing.T) {
 	r := newRig(t, ModeOn)
 	r.pass(900)
-	r.now = time.Date(2026, 10, 12, 8, 16, 0, 0, tz)
+	r.now = time.Date(2026, 10, 12, 11, 59, 0, 0, tz)
 	r.api.fail = errors.New("timeout")
 	r.tick(t)
 	s := r.state(t, 900)
@@ -276,11 +278,54 @@ func TestCrashBetweenIntentAndBlock(t *testing.T) {
 	r.st.CreateBlock(store.Block{UserID: 900, Day: "2026-10-12", Meal: "b", State: store.BlockPending,
 		CreatedAt: "2026-10-12 07:31:00", RestoreAt: "2026-10-12 08:16:00", Deadline: "2026-10-12 10:31:00"})
 	r.api.blocked[900] = true
-	r.now = time.Date(2026, 10, 12, 9, 0, 0, 0, tz) // restarted after the window
-	r.tick(t)                                       // pending → active
-	r.tick(t)                                       // active and due → released
+	r.now = time.Date(2026, 10, 12, 12, 0, 0, 0, tz) // restarted after the block was due
+	r.tick(t)                                        // pending → active
+	r.tick(t)                                        // active and due → released
 	if r.api.blocked[900] || r.state(t, 900).State != store.BlockReleased {
 		t.Fatal("restart must finish and release a half-done block")
+	}
+}
+
+func TestHeldUntilMidnightAfterLastWindow(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.now = time.Date(2026, 10, 12, 18, 40, 0, 0, tz) // dinner
+	r.pass(900)
+	if got := r.state(t, 900).RestoreAt; got != "2026-10-13 00:00:00" {
+		t.Fatalf("restore at %s, want midnight", got)
+	}
+	r.now = time.Date(2026, 10, 12, 23, 30, 0, 0, tz)
+	r.tick(t)
+	if !r.api.blocked[900] {
+		t.Fatal("released before midnight")
+	}
+	r.now = time.Date(2026, 10, 13, 0, 0, 0, 0, tz)
+	r.tick(t)
+	if r.api.blocked[900] {
+		t.Fatal("must be released at midnight")
+	}
+}
+
+func TestNextWindowOnlyAmongOwnTemplates(t *testing.T) {
+	r := newRig(t, ModeOn)
+	// Breakfast (3) and dinner (5) only: no lunch, so the block holds until dinner.
+	r.st.UpsertStaff(store.Staff{ID: 900, FIO: "Тест", Templates: []int{3, 5}}, "")
+	r.pass(900)
+	if got := r.state(t, 900).RestoreAt; got != "2026-10-12 18:29:00" {
+		t.Fatalf("restore at %s, want dinner 18:30 - 1 min", got)
+	}
+}
+
+func TestAdjacentWindowsNeverReleaseInsideWindow(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.b.meals = func() []meals.Meal {
+		return []meals.Meal{
+			{Key: "b", TemplateID: 3, Intervals: []meals.Interval{{Begin: 25500, End: 29700}}},
+			{Key: "l", TemplateID: 4, Intervals: []meals.Interval{{Begin: 29700, End: 48600}}},
+		}
+	}
+	r.pass(900)
+	if got := r.state(t, 900).RestoreAt; got != "2026-10-12 08:16:00" {
+		t.Fatalf("restore at %s, want window end 08:15 + 1 min (never inside the window)", got)
 	}
 }
 

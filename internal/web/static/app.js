@@ -56,9 +56,10 @@ function grouped() {
 const ANTIPASS_CODES = [264, 273, 776, 785];
 const TIME_CODES = [529, 776, 785];
 // Code 8 "Запрет прохода" is what a blocked card gets; if the service blocked this person for this meal, say why.
-const blockedByService = e => BL && BL.today.some(b => b.user_id === e.user_id && b.meal === e.meal && b.blocked_at && b.blocked_at <= e.ts);
+// The block outlives the window (held until the person's next window), so outside windows any service block still in force counts.
+const blockedByService = e => BL && BL.today.some(b => b.user_id === e.user_id && b.blocked_at && b.blocked_at <= e.ts && (e.meal ? b.meal === e.meal : b.restore_at > e.ts));
 function denyReason(e) {
-  if (ANTIPASS_CODES.includes(e.code) || (e.code === 8 && e.meal && blockedByService(e))) return e.meal ? `уже был ${onMeal(e.meal)}` : "уже проходил";
+  if (ANTIPASS_CODES.includes(e.code) || (e.code === 8 && blockedByService(e))) return e.meal ? `уже был ${onMeal(e.meal)}` : "уже поел, ждите своё следующее окно";
   if (TIME_CODES.includes(e.code)) return "нет доступа в это время";
   return e.name.replace(/^Запрет прохода:?\s*/i, "") || "запрет прохода";
 }
@@ -223,7 +224,7 @@ function renderBlocking() {
   const done = BL.today.filter(b => b.state === "released").length;
   panel.innerHTML = `<h3><span>Активные блокировки — ${BL.open.length}</span>${BL.open.length ? '<button class="mini" data-release="all">Снять все</button>' : ""}</h3>
     ${rows || `<small>${BL.effective === "off" ? "Блокировка выключена — работает старый метод, PERCo не меняется." : "Сейчас никто не заблокирован."}</small>`}
-    ${done ? `<div style="margin-top:8px"><small>Сегодня снято по окончании окна: ${done}</small></div>` : ""}`;
+    ${done ? `<div style="margin-top:8px"><small>Сегодня снято по расписанию: ${done}</small></div>` : ""}`;
   panel.querySelectorAll("[data-release]").forEach(btn => btn.onclick = () => openDialog(btn.dataset.release));
 }
 

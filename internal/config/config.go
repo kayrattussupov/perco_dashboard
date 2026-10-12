@@ -66,7 +66,7 @@ func Load(path string) (*Config, error) {
 		DoorEventIDs:        []int{31},
 	}
 	c.ResetMonitor.LookbackMinutes = 90
-	c.Blocking.MaxHours = 3
+	c.Blocking.MaxHours = 16
 	if err := yaml.Unmarshal(raw, c); err != nil {
 		return nil, fmt.Errorf("config.yaml: %w", err)
 	}

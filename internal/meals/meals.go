@@ -44,6 +44,30 @@ func (m Meal) EndAt(t time.Time) (int, bool) {
 	return 0, false
 }
 
+// NextBegin returns the earliest interval start (seconds from midnight) at or after `after` among the
+// windows the person holds. Like AtFor, it falls back to all windows when their templates are unknown.
+func NextBegin(ms []Meal, after int, templates []int) (int, bool) {
+	holds := false
+	for _, m := range ms {
+		if slices.Contains(templates, m.TemplateID) {
+			holds = true
+			break
+		}
+	}
+	best, found := 0, false
+	for _, m := range ms {
+		if holds && !slices.Contains(templates, m.TemplateID) {
+			continue
+		}
+		for _, iv := range m.Intervals {
+			if iv.Begin >= after && (!found || iv.Begin < best) {
+				best, found = iv.Begin, true
+			}
+		}
+	}
+	return best, found
+}
+
 // Find returns the meal with the given key.
 func Find(ms []Meal, key string) (Meal, bool) {
 	for _, m := range ms {

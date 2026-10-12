@@ -76,3 +76,23 @@ func TestSpan(t *testing.T) {
 		t.Fatalf("Span = %s–%s %v", FmtSec(b), FmtSec(e), ok)
 	}
 }
+
+func TestNextBegin(t *testing.T) {
+	ms := []Meal{
+		{Key: "b", TemplateID: 3, Intervals: []Interval{{25500, 29700}}},
+		{Key: "l", TemplateID: 4, Intervals: []Interval{{43200, 48600}}},
+		{Key: "d", TemplateID: 5, Intervals: []Interval{{66600, 70200}}},
+	}
+	if s, ok := NextBegin(ms, 29700, nil); !ok || s != 43200 { // templates unknown: any window
+		t.Fatalf("unknown templates: %d %v", s, ok)
+	}
+	if s, ok := NextBegin(ms, 29700, []int{3, 5}); !ok || s != 66600 { // no lunch template
+		t.Fatalf("own templates: %d %v", s, ok)
+	}
+	if s, ok := NextBegin(ms, 48600, []int{4}); ok {
+		t.Fatalf("no later window expected, got %d", s)
+	}
+	if s, ok := NextBegin(ms, 43200, []int{4}); !ok || s != 43200 { // begin == after counts
+		t.Fatalf("adjacent window: %d %v", s, ok)
+	}
+}
