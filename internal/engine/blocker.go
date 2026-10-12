@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -121,29 +122,51 @@ func (b *Blocker) close(r *store.Block, state, note string) {
 	}
 }
 
-// restoreFor is when a block taken at `at` in meal window m is released: 30 minutes before the person's next
-// window starts (never before this window ends), or at midnight when they have no later window today.
-func (b *Blocker) restoreFor(m meals.Meal, userID int64, at time.Time) (time.Time, bool) {
-	end, ok := m.EndAt(at)
-	if !ok {
-		return time.Time{}, false
-	}
+// outPrefix marks blocks taken for a pass outside every window of the person; the rest of the key is the
+// start of their next window ("out:11:30"; "out:24:00" when none is left today), so each gap blocks once a day.
+const outPrefix = "out:"
+
+// restoreFor returns when a block taken at `at` is released, and the block's key. In a meal window the block is
+// held until 30 minutes before the person's next window (never before this window ends); outside windows, until
+// 30 minutes before the next one. With no later window today it lasts until midnight.
+func (b *Blocker) restoreFor(mealKey string, userID int64, at time.Time) (time.Time, string, bool) {
 	day := dayStart(at)
-	restore := day.Add(24 * time.Hour)
-	if begin, ok := meals.NextBegin(b.meals(), end, b.st.StaffTemplates(userID)); ok {
-		restore = day.Add(time.Duration(begin)*time.Second - releaseLead)
+	from, floor := meals.SecOfDay(at), time.Time{}
+	key := mealKey
+	if strings.HasPrefix(mealKey, outPrefix) || mealKey == "" {
+		key = ""
+	} else {
+		m, ok := meals.Find(b.meals(), mealKey)
+		if !ok {
+			return time.Time{}, "", false
+		}
+		end, ok := m.EndAt(at)
+		if !ok {
+			return time.Time{}, "", false
+		}
+		from, floor = end, day.Add(time.Duration(end)*time.Second+releaseLag)
 	}
-	if floor := day.Add(time.Duration(end)*time.Second + releaseLag); restore.Before(floor) {
+	restore, next := day.Add(24*time.Hour), 24*3600
+	if begin, ok := meals.NextBegin(b.meals(), from, b.st.StaffTemplates(userID)); ok {
+		restore, next = day.Add(time.Duration(begin)*time.Second-releaseLead), begin
+	}
+	if restore.Before(floor) {
 		restore = floor
 	}
-	return restore, true
+	if key == "" {
+		key = outPrefix + meals.FmtSec(next)
+	}
+	if strings.HasPrefix(mealKey, outPrefix) {
+		key = mealKey
+	}
+	return restore, key, true
 }
 
 // OnPass is called for every newly seen pass. It blocks the employee if this is their first pass
 // in the current meal window and every safety condition holds.
 func (b *Blocker) OnPass(ctx context.Context, ev store.Event, passAt time.Time) {
 	mode := b.EffectiveMode()
-	if mode == ModeOff || ev.Meal == "" || ev.UserID == 0 {
+	if mode == ModeOff || ev.UserID == 0 {
 		return
 	}
 	if mode == ModeTest && !slices.Contains(b.cfg.Blocking.TestUserIDs, ev.UserID) {
@@ -159,11 +182,7 @@ func (b *Blocker) OnPass(ctx context.Context, ev store.Event, passAt time.Time) 
 	if !b.healthy() {
 		return
 	}
-	m, ok := meals.Find(b.meals(), ev.Meal)
-	if !ok {
-		return
-	}
-	restore, ok := b.restoreFor(m, ev.UserID, passAt)
+	restore, key, ok := b.restoreFor(ev.Meal, ev.UserID, passAt)
 	if !ok {
 		return
 	}
@@ -174,7 +193,7 @@ func (b *Blocker) OnPass(ctx context.Context, ev store.Event, passAt time.Time) 
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	r := store.Block{UserID: ev.UserID, FIO: ev.FIO, Day: ev.Day, Meal: ev.Meal, State: store.BlockPending,
+	r := store.Block{UserID: ev.UserID, FIO: ev.FIO, Day: ev.Day, Meal: key, State: store.BlockPending,
 		PassEventID: ev.ID, CreatedAt: b.nowTS(), RestoreAt: restore.Format(perco.TimeLayout),
 		Deadline: deadline.Format(perco.TimeLayout)}
 	id, err := b.st.CreateBlock(r)
@@ -209,7 +228,7 @@ func (b *Blocker) OnPass(ctx context.Context, ev store.Event, passAt time.Time) 
 	r.State, r.BlockedAt = store.BlockActive, b.nowTS()
 	b.st.UpdateBlock(r)
 	b.st.Audit(r.BlockedAt, "service", "block", fmt.Sprintf("%d %s %s до %s", r.UserID, r.FIO, r.Meal, r.RestoreAt[11:16]))
-	b.log.Printf("заблокирован %s (%s) до %s", r.FIO, m.Name, r.RestoreAt[11:16])
+	b.log.Printf("заблокирован %s (%s) до %s", r.FIO, r.Meal, r.RestoreAt[11:16])
 	b.notify()
 }
 
@@ -296,15 +315,11 @@ func (b *Blocker) tickActive(ctx context.Context, r *store.Block) {
 
 // followWindow moves the release time when an operator edits the meal window (never past the deadline).
 func (b *Blocker) followWindow(r *store.Block) {
-	m, ok := meals.Find(b.meals(), r.Meal)
-	if !ok {
-		return
-	}
 	created, err := b.parse(r.CreatedAt)
 	if err != nil {
 		return
 	}
-	restore, ok := b.restoreFor(m, r.UserID, created)
+	restore, _, ok := b.restoreFor(r.Meal, r.UserID, created)
 	if !ok {
 		return
 	}

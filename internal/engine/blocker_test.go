@@ -183,11 +183,7 @@ func TestFailOpen(t *testing.T) {
 		t.Fatal("no block without a healthy PERCo link")
 	}
 	r.ok = true
-	r.now = time.Date(2026, 10, 12, 10, 0, 0, 0, tz) // outside meal windows
-	r.pass(901)
-	if r.api.blocked[901] {
-		t.Fatal("no block outside meal windows")
-	}
+	r.now = time.Date(2026, 10, 12, 7, 31, 0, 0, tz)
 	// Catch-up after downtime: an old breakfast pass seen at 07:50.
 	r.now = time.Date(2026, 10, 12, 7, 50, 0, 0, tz)
 	old := store.Event{ID: 99, TS: "2026-10-12 07:31:00", Day: "2026-10-12", Kind: store.KindPass, UserID: 902, Meal: "b"}
@@ -326,6 +322,46 @@ func TestAdjacentWindowsNeverReleaseInsideWindow(t *testing.T) {
 	r.pass(900)
 	if got := r.state(t, 900).RestoreAt; got != "2026-10-12 08:16:00" {
 		t.Fatalf("restore at %s, want window end 08:15 + 1 min (never inside the window)", got)
+	}
+}
+
+func TestPassOutsideWindowBlocksUntilNextWindow(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.now = time.Date(2026, 10, 12, 10, 0, 0, 0, tz) // between breakfast and lunch
+	r.pass(900)
+	if !r.api.blocked[900] {
+		t.Fatal("a pass outside any window must block until the next window")
+	}
+	if s := r.state(t, 900); s.RestoreAt != "2026-10-12 11:30:00" || s.Meal != "out:12:00" {
+		t.Fatalf("block %+v, want restore 11:30 key out:12:00", s)
+	}
+	r.now = time.Date(2026, 10, 12, 11, 30, 0, 0, tz)
+	r.tick(t)
+	if r.api.blocked[900] {
+		t.Fatal("must be released 30 min before lunch")
+	}
+	r.pass(900) // 11:30 is outside every window but less than 30 min is left: no new block
+	if r.api.blocked[900] {
+		t.Fatal("no block when the next window is under 30 min away")
+	}
+}
+
+func TestPassOutsideWindowAfterLastWindow(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.now = time.Date(2026, 10, 12, 21, 0, 0, 0, tz)
+	r.pass(900)
+	if s := r.state(t, 900); s.RestoreAt != "2026-10-13 00:00:00" || s.Meal != "out:24:00" {
+		t.Fatalf("block %+v, want restore at midnight", s)
+	}
+}
+
+func TestPassOutsideWindowOnlyTestUsersInTestMode(t *testing.T) {
+	r := newRig(t, ModeTest)
+	r.now = time.Date(2026, 10, 12, 10, 0, 0, 0, tz)
+	r.pass(900)
+	r.pass(960)
+	if r.api.blocked[900] || !r.api.blocked[960] {
+		t.Fatal("test mode must block only test_user_ids")
 	}
 }
 
