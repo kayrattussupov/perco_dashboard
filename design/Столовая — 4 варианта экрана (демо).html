@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Столовая — варианты экрана</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#E9EEF2; --panel:#FFFFFF; --ink:#16212B; --muted:#5B6B78; --line:#CFD8E0;
+  --steel:#2D4A63; --ok:#1F7A55; --ok-bg:#DDF1E7; --warn:#B3261E; --warn-bg:#FBE1DE;
+  --amber:#B86E00; --teal:#0F7A80; --indigo:#4A4FB0; --soft:#F4F7F9;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#121A21; --panel:#1A242D; --ink:#E6EDF2; --muted:#93A4B2; --line:#2C3A46;
+    --steel:#8FB3D1; --ok:#5CCB98; --ok-bg:#16352A; --warn:#FF8A80; --warn-bg:#3D1C1A;
+    --amber:#F0A63A; --teal:#4CC3C9; --indigo:#9EA3F5; --soft:#202C36;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121A21; --panel:#1A242D; --ink:#E6EDF2; --muted:#93A4B2; --line:#2C3A46;
+  --steel:#8FB3D1; --ok:#5CCB98; --ok-bg:#16352A; --warn:#FF8A80; --warn-bg:#3D1C1A;
+  --amber:#F0A63A; --teal:#4CC3C9; --indigo:#9EA3F5; --soft:#202C36;
+}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Golos Text",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:15px;line-height:1.45}
+button,select,input{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--steel);outline-offset:2px}
+.mono{font-family:"Unbounded","Golos Text",sans-serif;font-variant-numeric:tabular-nums}
+.meal-b{color:var(--amber)} .meal-l{color:var(--teal)} .meal-d{color:var(--indigo)} .meal-x{color:var(--muted)}
+
+/* Shell */
+.bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;background:var(--soft);padding:4px;border-radius:10px}
+.tab{border:0;background:transparent;padding:8px 14px;border-radius:7px;cursor:pointer;font-weight:500;color:var(--muted)}
+.tab[aria-selected="true"]{background:var(--panel);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.demo{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;align-items:center}
+.demo select{padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--soft);max-width:240px}
+.btn{border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer;background:var(--steel);color:var(--panel)}
+.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--ink)}
+.note{max-width:1400px;margin:14px auto 0;padding:0 20px;color:var(--muted);font-size:14px}
+.note b{color:var(--ink)}
+.view{display:none;max-width:1400px;margin:0 auto;padding:16px 20px 30px}
+.view.on{display:block}
+.chip{display:inline-block;border-radius:6px;padding:2px 8px;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;background:var(--soft);border:1px solid var(--line);margin:2px 4px 2px 0}
+.avatar{flex:none;display:grid;place-items:center;color:#fff;font-family:"Unbounded",sans-serif;font-weight:500;border-radius:10px}
+.flash{animation:flash .9s ease-out}
+@keyframes flash{0%{box-shadow:0 0 0 5px var(--steel)}100%{box-shadow:0 0 0 0 transparent}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---------- B: Kiosk ---------- */
+.kiosk{min-height:calc(100vh - 170px);border-radius:18px;display:grid;place-items:center;text-align:center;padding:40px 20px;transition:background .3s;background:var(--panel);border:1px solid var(--line)}
+.kiosk.ok{background:var(--ok-bg);border-color:var(--ok)}
+.kiosk.warn{background:var(--warn-bg);border-color:var(--warn)}
+.kiosk .verdict{font-size:clamp(22px,3vw,34px);font-weight:700;margin-bottom:22px}
+.kiosk.ok .verdict{color:var(--ok)} .kiosk.warn .verdict{color:var(--warn)}
+.kiosk .avatar{width:150px;height:180px;font-size:48px;margin:0 auto 20px}
+.kiosk .kname{font-size:clamp(26px,4vw,46px);font-weight:700;line-height:1.15;margin:0}
+.kiosk .krole{color:var(--muted);font-size:18px;margin:6px 0 26px}
+.kiosk .kn{font-family:"Unbounded",sans-serif;font-weight:700;font-size:clamp(90px,14vw,170px);line-height:.9}
+.kiosk.warn .kn{color:var(--warn)}
+.kiosk .klbl{font-size:18px;color:var(--muted);margin-bottom:16px}
+.kiosk .chip{font-size:17px;padding:4px 12px}
+.kiosk .idle{color:var(--muted);font-size:22px}
+
+/* ---------- C: Feed ---------- */
+.feedgrid{display:grid;grid-template-columns:1fr 300px;gap:20px}
+@media (max-width:900px){.feedgrid{grid-template-columns:1fr}}
+.feed{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.ev{display:grid;grid-template-columns:64px 46px 1fr auto;gap:14px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
+.ev:last-child{border-bottom:0}
+.ev .tm{font-family:"Unbounded",sans-serif;font-weight:500;font-variant-numeric:tabular-nums}
+.ev .avatar{width:46px;height:46px;font-size:15px;border-radius:50%}
+.ev .who{font-weight:600}
+.ev .dep{color:var(--muted);font-size:13px}
+.badge{border-radius:20px;padding:4px 12px;font-weight:600;font-size:13px;white-space:nowrap}
+.badge.ok{background:var(--ok-bg);color:var(--ok)}
+.badge.warn{background:var(--warn-bg);color:var(--warn)}
+.ev.new{animation:flash .9s ease-out}
+.side{display:flex;flex-direction:column;gap:14px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+.box h3{margin:0 0 10px;font-size:15px}
+.kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)}
+.kv:last-child{border-bottom:0}
+.kv b{font-family:"Unbounded",sans-serif;font-weight:500}
+.replist div{padding:6px 0;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
+.replist div:last-child{border-bottom:0}
+.replist span:last-child{color:var(--warn);font-weight:700}
+@media (max-width:560px){.ev{grid-template-columns:50px 1fr auto}.ev .avatar{display:none}}
+
+/* ---------- D: Meals board ---------- */
+.board{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media (max-width:900px){.board{grid-template-columns:1fr}}
+.col{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.col-head{padding:14px 16px;border-bottom:3px solid currentColor;display:flex;justify-content:space-between;align-items:baseline}
+.col-head h3{margin:0;font-size:18px}
+.col-head small{color:var(--muted)}
+.col-head .mono{font-size:26px}
+.col-body{padding:6px 0;max-height:60vh;overflow:auto}
+.row{display:flex;justify-content:space-between;gap:10px;padding:8px 16px}
+.row.rep{background:var(--warn-bg)}
+.row .rn{font-weight:500}
+.row .rt{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums;text-align:right}
+.row.rep .rt{color:var(--warn);font-weight:600}
+.row.flash{animation:flash .9s ease-out}
+.empty{padding:20px 16px;color:var(--muted);font-size:14px}
+.notyet{margin-top:16px;padding:14px 16px;background:var(--panel);border:1px solid var(--line);border-radius:14px}
+.notyet h3{margin:0 0 6px;font-size:15px}
+
+/* ---------- A: Operator (compact) ---------- */
+.op{display:grid;grid-template-columns:minmax(300px,400px) 1fr;gap:20px}
+@media (max-width:900px){.op{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;align-self:start}
+.state{border-radius:10px;padding:9px 12px;font-weight:600;margin-bottom:14px}
+.state.ok{background:var(--ok-bg);color:var(--ok)} .state.warn{background:var(--warn-bg);color:var(--warn)} .state.idle{background:var(--soft);color:var(--muted)}
+.person{display:flex;gap:14px;align-items:center}
+.person .avatar{width:80px;height:96px;font-size:24px}
+.pname{font-size:20px;font-weight:700;margin:0 0 2px;line-height:1.2}
+.prole{color:var(--muted);margin:0}
+.big{display:flex;align-items:flex-end;gap:12px;margin:16px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+.big .mono{font-weight:700;font-size:58px;line-height:.9}
+.big .mono.warn{color:var(--warn)}
+.big span{color:var(--muted);padding-bottom:5px}
+.twrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px}
+table{width:100%;border-collapse:collapse;min-width:600px}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:13px;font-weight:500;color:var(--muted);background:var(--soft)}
+tr:last-child td{border-bottom:0}
+tr.rep td:first-child{box-shadow:inset 4px 0 0 var(--warn)}
+td.num{text-align:center;font-family:"Unbounded",sans-serif;font-weight:500;font-size:17px}
+td.num.warn{color:var(--warn)}
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-v="a" aria-selected="true">A. Рабочее место</button>
+    <button class="tab" role="tab" data-v="b" aria-selected="false">B. Табло у входа</button>
+    <button class="tab" role="tab" data-v="c" aria-selected="false">C. Лента событий</button>
+    <button class="tab" role="tab" data-v="d" aria-selected="false">D. По приёмам пищи</button>
+  </div>
+  <div class="demo">
+    <select id="pick" aria-label="Сотрудник"></select>
+    <button class="btn" id="swipe">Приложить карту</button>
+    <button class="btn ghost" id="random">Случайный</button>
+    <span class="mono" id="clock" style="font-size:18px;margin-left:6px">--:--</span>
+  </div>
+</div>
+
+<p class="note" id="note"></p>
+
+<!-- A -->
+<section class="view on" id="v-a">
+  <div class="op">
+    <div class="card" id="aCard"></div>
+    <div>
+      <div class="twrap"><table><thead><tr><th>Сотрудник</th><th>Шаблон</th><th>Проходы сегодня</th><th style="text-align:center">Кол-во</th></tr></thead><tbody id="aRows"></tbody></table></div>
+    </div>
+  </div>
+</section>
+
+<!-- B -->
+<section class="view" id="v-b"><div class="kiosk" id="kiosk"></div></section>
+
+<!-- C -->
+<section class="view" id="v-c">
+  <div class="feedgrid">
+    <div class="feed" id="feed"></div>
+    <div class="side">
+      <div class="box"><h3>Сегодня с 00:00</h3><div id="cStats"></div></div>
+      <div class="box"><h3>Повторные проходы</h3><div class="replist" id="cRep"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- D -->
+<section class="view" id="v-d">
+  <div class="board" id="board"></div>
+  <div class="notyet" id="notyet"></div>
+</section>
+
+<script>
+const staff = [
+  {id:1,tab:"0142",name:"Ахметов Ерлан Серикович",dep:"Цех №1",pos:"Оператор линии",tpl:["b"],color:"#2D6A8F"},
+  {id:2,tab:"0187",name:"Иванова Мария Петровна",dep:"Бухгалтерия",pos:"Бухгалтер",tpl:["l"],color:"#7A4F9A"},
+  {id:3,tab:"0203",name:"Сейткали Динара Маратовна",dep:"Склад",pos:"Кладовщик",tpl:["b","l"],color:"#A0522D"},
+  {id:4,tab:"0219",name:"Ким Виктор Александрович",dep:"Цех №2",pos:"Мастер смены",tpl:["b","l","d"],color:"#3B7A57"},
+  {id:5,tab:"0231",name:"Жумабаев Нурлан Асанович",dep:"Охрана",pos:"Охранник",tpl:["d"],color:"#5A5F9E"},
+  {id:6,tab:"0256",name:"Петренко Ольга Игоревна",dep:"Отдел кадров",pos:"Специалист",tpl:["l"],color:"#9A4F6B"},
+  {id:7,tab:"0264",name:"Омаров Тимур Канатович",dep:"Цех №1",pos:"Сварщик",tpl:["b","l"],color:"#2F7F86"},
+  {id:8,tab:"0278",name:"Абенова Айгерим Болатовна",dep:"Лаборатория",pos:"Лаборант",tpl:["l"],color:"#8A6A1F"},
+  {id:9,tab:"0290",name:"Смирнов Денис Олегович",dep:"Гараж",pos:"Водитель",tpl:["b"],color:"#4D6C8A"},
+  {id:10,tab:"0305",name:"Байжанова Салтанат Ерболовна",dep:"Столовая",pos:"Повар",tpl:["b","l","d"],color:"#7F5A3C"},
+  {id:11,tab:"0318",name:"Нургалиев Арман Бахытович",dep:"Цех №2",pos:"Электрик",tpl:["l","d"],color:"#356F5A"},
+  {id:12,tab:"0322",name:"Козлова Елена Сергеевна",dep:"Администрация",pos:"Секретарь",tpl:["l"],color:"#6B5B95"}
+];
+const MEAL={b:"Завтрак",l:"Обед",d:"Ужин"};
+const WIN={b:"06:00–10:00",l:"11:00–15:00",d:"17:00–21:00"};
+const NOTES={
+  a:"<b>Рабочее место администратора.</b> Слева — кто прошёл только что и сколько раз за день, справа — вся таблица дня. Подходит, если за экраном сидит человек и проверяет проходы.",
+  b:"<b>Табло у входа в столовую.</b> Один человек на весь экран: крупно имя, счётчик и цвет — зелёный при первом проходе, красный при повторном. Видно издалека, без мыши и клавиатуры.",
+  c:"<b>Лента событий.</b> Каждый проход отдельной строкой, новые сверху, как журнал охраны. Сбоку итоги дня и список тех, кто прошёл больше одного раза.",
+  d:"<b>По приёмам пищи.</b> Три колонки — завтрак, обед, ужин — и кто прошёл в каждую. Сразу видно, кто пришёл дважды в один приём и кто ещё не был."
+};
+const pad=n=>String(n).padStart(2,"0");
+const fmt=d=>pad(d.getHours())+":"+pad(d.getMinutes());
+const mins=d=>d.getHours()*60+d.getMinutes();
+const mealOf=d=>{const h=mins(d)/60;if(h>=6&&h<10)return"b";if(h>=11&&h<15)return"l";if(h>=17&&h<21)return"d";return"x";};
+const ini=n=>n.split(" ").slice(0,2).map(s=>s[0]).join("");
+const S=id=>staff.find(s=>s.id===id);
+function plural(n){const a=n%10,b=n%100;if(a===1&&b!==11)return"проход";if(a>=2&&a<=4&&(b<10||b>=20))return"прохода";return"проходов";}
+
+let passes=[],last=null,view="a";
+
+(function seed(){
+  const now=new Date(),st=new Date(now);st.setHours(0,0,0,0);const nm=(now-st)/60000;
+  const slots={b:[400,570],l:[720,870],d:[1050,1200]};
+  staff.forEach((s,i)=>s.tpl.forEach(k=>{const[a,b]=slots[k];if(a>nm)return;
+    const m=a+((i*37+k.charCodeAt(0)*13)%Math.max(1,Math.min(b,nm)-a));passes.push({sid:s.id,t:new Date(st.getTime()+m*60000)});}));
+  [[7,25],[3,40]].forEach(([sid,g])=>{const p=passes.filter(x=>x.sid===sid).pop();if(p){const t=new Date(p.t.getTime()+g*60000);if(t<now)passes.push({sid,t});}});
+  passes.sort((a,b)=>a.t-b.t);
+  if(passes.length)last=passes[passes.length-1].sid;
+})();
+
+const today=sid=>passes.filter(p=>p.sid===sid);
+const chips=list=>list.map(p=>`<span class="chip meal-${mealOf(p.t)}">${fmt(p.t)}</span>`).join("");
+function grouped(){const m=new Map();passes.forEach(p=>{if(!m.has(p.sid))m.set(p.sid,[]);m.get(p.sid).push(p);});
+  return[...m.entries()].map(([sid,list])=>({s:S(sid),list})).sort((a,b)=>b.list.at(-1).t-a.list.at(-1).t);}
+
+function rA(flash){
+  const c=document.getElementById("aCard");
+  if(!last){c.innerHTML='<div class="state idle">Ожидание прохода по карте</div>';}
+  else{const s=S(last),l=today(last),n=l.length,rep=n>1;
+    c.innerHTML=`<div class="state ${rep?'warn':'ok'}">${rep?`Повторный проход — ${n}-й за сегодня`:'Первый проход за сегодня'}</div>
+    <div class="person"><div class="avatar" style="background:${s.color}">${ini(s.name)}</div>
+    <div><p class="pname">${s.name}</p><p class="prole">${s.pos}, ${s.dep} · таб. ${s.tab}</p>
+    <p class="prole">Шаблон: ${s.tpl.map(k=>MEAL[k]).join(", ")}</p></div></div>
+    <div class="big"><div class="mono ${rep?'warn':''}">${n}</div><span>${plural(n)} с 00:00</span></div>${chips(l)}`;
+    if(flash){c.classList.remove("flash");void c.offsetWidth;c.classList.add("flash");}}
+  document.getElementById("aRows").innerHTML=grouped().map(r=>{const n=r.list.length;
+    return`<tr class="${n>1?'rep':''}"><td><b>${r.s.name}</b><br><small style="color:var(--muted)">${r.s.dep} · таб. ${r.s.tab}</small></td>
+    <td>${r.s.tpl.map(k=>`<span class="meal-${k}">${MEAL[k]}</span>`).join(", ")}</td><td>${chips(r.list)}</td>
+    <td class="num ${n>1?'warn':''}">${n}</td></tr>`;}).join("")||'<tr><td colspan="4" style="color:var(--muted)">С 00:00 проходов ещё не было.</td></tr>';
+}
+
+function rB(){
+  const k=document.getElementById("kiosk");
+  if(!last){k.className="kiosk";k.innerHTML='<div class="idle">Приложите карту к считывателю</div>';return;}
+  const s=S(last),l=today(last),n=l.length,rep=n>1;
+  k.className="kiosk "+(rep?"warn":"ok");
+  k.innerHTML=`<div><div class="verdict">${rep?'Повторный проход':'Проход разрешён'}</div>
+  <div class="avatar" style="background:${s.color}">${ini(s.name)}</div>
+  <p class="kname">${s.name}</p><p class="krole">${s.pos}, ${s.dep}</p>
+  <div class="kn">${n}</div><div class="klbl">${plural(n)} сегодня</div><div>${chips(l)}</div></div>`;
+}
+
+function rC(isNew){
+  const evs=[...passes].reverse().slice(0,40);
+  const cnt={};passes.forEach(p=>{cnt[p.sid]=(cnt[p.sid]||0)+1;p._n=cnt[p.sid];});
+  document.getElementById("feed").innerHTML=evs.map((p,i)=>{const s=S(p.sid),rep=p._n>1,m=mealOf(p.t);
+    return`<div class="ev ${isNew&&i===0?'new':''}"><div class="tm">${fmt(p.t)}</div>
+    <div class="avatar" style="background:${s.color}">${ini(s.name)}</div>
+    <div><div class="who">${s.name}</div><div class="dep">${s.dep} · <span class="meal-${m}">${m==="x"?"вне окна питания":MEAL[m]}</span></div></div>
+    <span class="badge ${rep?'warn':'ok'}">${rep?`${p._n}-й раз`:'1-й раз'}</span></div>`;}).join("")||'<div class="empty">С 00:00 проходов ещё не было.</div>';
+  const g=grouped(),reps=g.filter(r=>r.list.length>1);
+  document.getElementById("cStats").innerHTML=`<div class="kv"><span>Проходов</span><b>${passes.length}</b></div>
+    <div class="kv"><span>Сотрудников</span><b>${g.length}</b></div><div class="kv"><span>С повторами</span><b style="color:var(--warn)">${reps.length}</b></div>`;
+  document.getElementById("cRep").innerHTML=reps.map(r=>`<div><span>${r.s.name}</span><span>${r.list.length}</span></div>`).join("")||'<div style="color:var(--muted)">Повторов нет</div>';
+}
+
+function rD(flashSid){
+  const now=new Date();
+  document.getElementById("board").innerHTML=["b","l","d"].map(k=>{
+    const m=new Map();passes.filter(p=>mealOf(p.t)===k).forEach(p=>{if(!m.has(p.sid))m.set(p.sid,[]);m.get(p.sid).push(p);});
+    const rows=[...m.entries()].sort((a,b)=>b[1].at(-1).t-a[1].at(-1).t);
+    const expected=staff.filter(s=>s.tpl.includes(k)).length;
+    return`<div class="col"><div class="col-head meal-${k}"><div><h3>${MEAL[k]}</h3><small>${WIN[k]}</small></div>
+    <div class="mono">${m.size}<small style="font-size:14px;color:var(--muted)"> / ${expected}</small></div></div>
+    <div class="col-body">${rows.map(([sid,l])=>`<div class="row ${l.length>1?'rep':''} ${sid===flashSid&&mealOf(now)===k?'flash':''}">
+      <span class="rn">${S(sid).name}</span><span class="rt">${l.length>1?`${l.length} раза · `:''}${l.map(p=>fmt(p.t)).join(", ")}</span></div>`).join("")
+      ||'<div class="empty">Пока никто не прошёл</div>'}</div></div>`;}).join("");
+  const cur=mealOf(now);
+  const ny=document.getElementById("notyet");
+  if(cur==="x"){ny.innerHTML=`<h3>Ещё не были</h3><span style="color:var(--muted)">Сейчас вне окна питания — список появится во время завтрака, обеда или ужина.</span>`;}
+  else{const been=new Set(passes.filter(p=>mealOf(p.t)===cur).map(p=>p.sid));
+    const miss=staff.filter(s=>s.tpl.includes(cur)&&!been.has(s.id));
+    ny.innerHTML=`<h3>Ещё не были на ${MEAL[cur].toLowerCase()}е</h3>${miss.map(s=>`<span class="chip">${s.name}</span>`).join("")||'<span style="color:var(--muted)">Все прошли</span>'}`;}
+}
+
+function renderAll(flash){rA(flash);rB();rC(flash);rD(flash?last:null);document.getElementById("note").innerHTML=NOTES[view];}
+function swipe(id){passes.push({sid:id,t:new Date()});last=id;renderAll(true);}
+
+document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{view=t.dataset.v;
+  document.querySelectorAll(".tab").forEach(x=>x.setAttribute("aria-selected",x===t));
+  document.querySelectorAll(".view").forEach(v=>v.classList.toggle("on",v.id==="v-"+view));
+  document.getElementById("note").innerHTML=NOTES[view];});
+const pick=document.getElementById("pick");
+pick.innerHTML=staff.map(s=>`<option value="${s.id}">${s.name}</option>`).join("");
+document.getElementById("swipe").onclick=()=>swipe(+pick.value);
+document.getElementById("random").onclick=()=>swipe(staff[Math.floor(Math.random()*staff.length)].id);
+function tick(){const d=new Date();document.getElementById("clock").textContent=fmt(d)+":"+pad(d.getSeconds());
+  if(mins(d)===0&&d.getSeconds()===0){passes=[];last=null;renderAll(false);}}
+renderAll(false);tick();setInterval(tick,1000);
+</script>
+</body>
+</html>

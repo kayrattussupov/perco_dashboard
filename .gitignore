@@ -1,0 +1,6 @@
+﻿config.yaml
+perco-meal.exe
+*.db
+*.db-*
+*.log
+*.log.1
