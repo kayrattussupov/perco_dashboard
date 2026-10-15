@@ -157,13 +157,6 @@ td.num.warn{color:var(--warn)}
 .blk .row:last-child{border-bottom:0}
 .blk small{color:var(--muted)}
 .blk .err{color:var(--warn);font-size:13px}
-.bh-days{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 8px}
-.bh-days button{border:1px solid var(--line);background:var(--soft);color:var(--muted);border-radius:14px;padding:3px 10px;font-size:13px;cursor:pointer}
-.bh-days button[aria-pressed=true]{background:var(--steel);color:var(--panel);border-color:var(--steel)}
-.bh-list{max-height:420px;overflow:auto}
-.bh-list .row .tm{font-variant-numeric:tabular-nums;color:var(--muted);font-size:13px;white-space:nowrap}
-.bh-list .row.bad small{color:var(--warn)}
-.blk input.bh-q{width:100%;box-sizing:border-box;margin:0 0 6px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--soft);color:inherit}
 .blk-total{font-size:20px;font-variant-numeric:tabular-nums}
 .blk-total.some{color:var(--warn)}
 .blk .mini{border:1px solid var(--line);background:transparent;border-radius:6px;padding:3px 8px;font-size:13px;cursor:pointer;white-space:nowrap}
@@ -207,7 +200,6 @@ dialog input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid va
     <div class="lcol">
       <div class="card" id="aCard"></div>
       <div class="card blk" id="blkPanel"></div>
-      <div class="card blk" id="blkHistory"></div>
     </div>
     <div>
       <input class="search" id="aSearch" type="search" placeholder="Поиск по фамилии" aria-label="Поиск по фамилии">

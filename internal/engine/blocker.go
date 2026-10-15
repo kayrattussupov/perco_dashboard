@@ -564,21 +564,3 @@ func latestCheck(recs []CheckRecord) *CheckRecord {
 	}
 	return last
 }
-
-// historyDays is how many past days with blocks the dashboard can browse.
-const historyDays = 14
-
-// BlockDays lists the days that have block rows (today first when it has any).
-func (b *Blocker) BlockDays() ([]store.DayCount, error) { return b.st.BlockDays(historyDays) }
-
-// BlockHistory returns every block row of one day, newest first.
-func (b *Blocker) BlockHistory(day string) ([]store.Block, error) {
-	if _, err := time.Parse("2006-01-02", day); err != nil {
-		return nil, fmt.Errorf("день %q: нужен формат ГГГГ-ММ-ДД", day)
-	}
-	bs, err := b.st.BlocksOfDay(day)
-	if bs == nil {
-		bs = []store.Block{}
-	}
-	return bs, err
-}

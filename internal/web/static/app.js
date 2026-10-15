@@ -221,58 +221,7 @@ function renderLink() {
 С ${c.since.slice(11, 16)} · проверено ${c.checked_at.slice(11, 19)}`;
 }
 
-// ---- Block history: every block of a chosen day (today by default), previous days one tap away ----
-let histDay = null, histDays = [], histRows = [], histQ = "", histBusy = false, histAgain = false;
-const dayLabel = d => {
-  const t = (D && D.day) || new Date().toISOString().slice(0, 10);
-  if (d === t) return "Сегодня";
-  const y = new Date(t + "T12:00:00Z"); y.setUTCDate(y.getUTCDate() - 1); // UTC arithmetic: no time-zone shift of the date
-  if (d === y.toISOString().slice(0, 10)) return "Вчера";
-  return d.slice(8, 10) + "." + d.slice(5, 7);
-};
-async function loadHistory() {
-  if (histBusy) { histAgain = true; return; }
-  histBusy = true;
-  try {
-    const today = (D && D.day) || null;
-    const rd = await fetch("/api/blocking/days", {cache: "no-store"});
-    histDays = rd.ok ? await rd.json() : [];
-    if (today && !histDays.some(x => x.day === today)) histDays.unshift({day: today, count: 0});
-    if (!histDay || !histDays.some(x => x.day === histDay)) histDay = today || (histDays[0] && histDays[0].day);
-    const rh = histDay ? await fetch("/api/blocking/history?day=" + histDay, {cache: "no-store"}) : null;
-    histRows = rh && rh.ok ? await rh.json() : [];
-  } catch (err) { histRows = []; }
-  finally { histBusy = false; if (histAgain) { histAgain = false; loadHistory(); return; } }
-  renderHistory();
-}
-function histStatus(b) {
-  if (b.state === "released") return "снята " + b.closed_at.slice(11, 16);
-  if (b.state === "blocked") return "заблокирован до " + b.restore_at.slice(11, 16);
-  if (b.state === "operator") return "заблокирован оператором";
-  if (b.state === "pending") return "применяется…";
-  return "закрыта" + (b.note ? ": " + b.note : "");
-}
-function renderHistory() {
-  const box = $("blkHistory");
-  if (!box) return;
-  const q = histQ.trim().toLowerCase();
-  const rows = histRows.filter(b => !q || person(b.user_id, b.fio).fio.toLowerCase().includes(q));
-  const days = histDays.map(d => `<button data-day="${d.day}" aria-pressed="${d.day === histDay}">${dayLabel(d.day)} · ${d.count}</button>`).join("");
-  const list = rows.map(b => `<div class="row${b.last_error ? " bad" : ""}"><span><b>${esc(person(b.user_id, b.fio).fio)}</b><br>
-      <small><span class="${mealCls(b.meal)}">${esc(mealName(b.meal))}</span> · ${esc(histStatus(b))}</small>
-      ${b.last_error ? `<div class="err">Ошибка: ${esc(b.last_error)}</div>` : ""}</span>
-      <span class="tm">${esc((b.blocked_at || b.created_at).slice(11, 16))}</span></div>`).join("");
-  box.innerHTML = `<h3><span>История блокировок — ${histRows.length}</span></h3>
-    <div class="bh-days">${days}</div>
-    <input class="bh-q" id="bhQ" type="search" placeholder="Поиск по фамилии" value="${esc(histQ)}" aria-label="Поиск по истории блокировок">
-    <div class="bh-list">${list || "<small>Блокировок за этот день нет.</small>"}</div>`;
-  box.querySelectorAll("[data-day]").forEach(btn => btn.onclick = () => { histDay = btn.dataset.day; loadHistory(); });
-  const inp = $("bhQ");
-  inp.oninput = () => { histQ = inp.value; const pos = inp.selectionStart; renderHistory(); const n = $("bhQ"); n.focus(); n.setSelectionRange(pos, pos); };
-}
-
 function renderBlocking() {
-  loadHistory();
   renderLink();
   const pill = $("blkPill"), panel = $("blkPanel");
   if (!BL) { pill.textContent = "Блокировка: ?"; panel.innerHTML = ""; return; }
