@@ -524,8 +524,11 @@ func (b *Blocker) Status() (*BlockingStatus, error) {
 				continue
 			}
 			s.Checks = append(s.Checks, rec)
-			if t, err := b.parse(rec.RanAt); !rec.OK && err == nil && b.now().Sub(t) < 26*time.Hour {
-				s.Warnings = append(s.Warnings, fmt.Sprintf("Проверка %s (%s): %s", rec.Time, rec.RanAt[:16], strings.Join(rec.Problems, "; ")))
+		}
+		// Only the latest run speaks: a later clean check supersedes an earlier failed one.
+		if last := latestCheck(s.Checks); last != nil && !last.OK {
+			if t, err := b.parse(last.RanAt); err == nil && b.now().Sub(t) < 26*time.Hour {
+				s.Warnings = append(s.Warnings, fmt.Sprintf("Проверка %s (%s): %s", last.Time, last.RanAt[:16], strings.Join(last.Problems, "; ")))
 			}
 		}
 	}
@@ -544,4 +547,15 @@ func (b *Blocker) Status() (*BlockingStatus, error) {
 		s.Warnings = append(s.Warnings, "Служба работает под оператором admin: блокировки, сделанные людьми под admin, будут считаться блокировками службы. Заведите отдельного оператора (например, service) и укажите его в config.yaml.")
 	}
 	return s, nil
+}
+
+// latestCheck returns the check that ran most recently.
+func latestCheck(recs []CheckRecord) *CheckRecord {
+	var last *CheckRecord
+	for i := range recs {
+		if last == nil || recs[i].RanAt > last.RanAt {
+			last = &recs[i]
+		}
+	}
+	return last
 }

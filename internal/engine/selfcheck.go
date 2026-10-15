@@ -14,7 +14,6 @@ import (
 
 const (
 	checkKeyPrefix = "selfcheck:"      // kv: last result per configured time, e.g. "selfcheck:06:30"
-	checkSinceKey  = "selfcheck_since" // kv: when the previous check looked at the event feed
 	checkGrace     = 30 * time.Minute  // how long a due check waits for the controller before it reports the outage
 	checkWorkers   = 8                 // parallel employee reads during a check
 	maxNames       = 8                 // employees named in one problem line
@@ -101,7 +100,6 @@ func (b *Blocker) runCheck(ctx context.Context, hm string, due time.Time) {
 		problems = append(problems, b.strayBlocks(ctx)...)
 		problems = append(problems, b.unknownCards(now)...)
 	}
-	b.st.SetKV(checkSinceKey, b.nowTS())
 
 	rec := CheckRecord{Time: hm, Due: due.Format("2006-01-02 15:04:05"), RanAt: b.nowTS(),
 		Late: now.Sub(due) > 10*time.Minute, OK: len(problems) == 0, Problems: problems}
@@ -214,33 +212,46 @@ func (b *Blocker) strayBlocks(ctx context.Context) []string {
 	return out
 }
 
-// unknownCards finds employees whose card the controller rejected as unregistered since the previous check
-// although PERCo knows the card (the event carries the employee): the card never reached the controller.
+// unknownCards finds employees whose card the controller rejected as unregistered in the last day although
+// PERCo knows the card (the event carries the employee): the card never reached the controller. The problem
+// stays until the person has a successful pass after the rejection, so a later check cannot report "all clear"
+// merely because nobody has swiped since.
 func (b *Blocker) unknownCards(now time.Time) []string {
-	from := now.Add(-14 * time.Hour)
-	if raw := b.st.GetKV(checkSinceKey); raw != "" {
-		if t, err := b.parse(raw); err == nil && t.After(from) {
-			from = t
-		}
-	}
+	from := now.Add(-24 * time.Hour)
 	evs, err := b.st.Events(from.Format("2006-01-02"), now.Format("2006-01-02"))
 	if err != nil {
 		return []string{"Не удалось прочитать события: " + err.Error()}
 	}
 	fromTS := from.Format("2006-01-02 15:04:05")
-	seen := map[int64]bool{}
-	var names []string
-	for _, e := range evs {
-		if e.Kind != store.KindOther || e.Code != 1 || e.UserID == 0 || e.TS < fromTS || seen[e.UserID] {
+	lastReject := map[int64]string{} // user → time of the latest rejection
+	lastPass := map[int64]string{}   // user → time of the latest successful pass
+	fio := map[int64]string{}
+	var order []int64
+	for _, e := range evs { // ordered by time
+		if e.UserID == 0 || e.TS < fromTS {
 			continue
 		}
-		seen[e.UserID] = true
-		names = append(names, e.FIO)
+		switch {
+		case e.Kind == store.KindOther && e.Code == 1:
+			if _, seen := lastReject[e.UserID]; !seen {
+				order = append(order, e.UserID)
+			}
+			lastReject[e.UserID], fio[e.UserID] = e.TS, e.FIO
+		case e.Kind == store.KindPass:
+			lastPass[e.UserID] = e.TS
+		}
+	}
+	var names []string
+	for _, u := range order {
+		if lastPass[u] > lastReject[u] {
+			continue // passed since: the card works
+		}
+		names = append(names, fio[u])
 	}
 	if len(names) == 0 {
 		return nil
 	}
-	return []string{fmt.Sprintf("Контроллер не знает карты (%d): %s. Загрузите конфигурацию в контроллер в PERCo-Web", len(names), nameList(names))}
+	return []string{fmt.Sprintf("Контроллер не знает карты (%d), с тех пор не прошли: %s. Загрузите конфигурацию в контроллер в PERCo-Web", len(names), nameList(names))}
 }
 
 func nameList(names []string) string {
