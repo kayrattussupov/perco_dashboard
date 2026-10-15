@@ -25,9 +25,11 @@ type fakePERCo struct {
 	pending      int      // commands PERCo has not delivered yet
 	devErrors    []string // resources not transferred
 	ignoreUnlock bool     // PERCo says "ok" to an unblock but the flag stays set
+	healthCalls  int      // DeviceHealth requests made
 }
 
 func (f *fakePERCo) DeviceHealth(_ context.Context, _ []int) (perco.DeviceHealth, error) {
+	f.healthCalls++
 	if f.fail != nil {
 		return perco.DeviceHealth{}, f.fail
 	}

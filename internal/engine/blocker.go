@@ -25,13 +25,12 @@ const (
 )
 
 const (
-	modeKey      = "blocking_mode"
-	releaseLag   = time.Minute      // keep the block a little past the window end
-	releaseLead  = 30 * time.Minute // unblock this long before the person's next window starts
-	maxPassAge   = 2 * time.Minute  // older passes are catch-up after downtime: never block on them
-	maxClockGap  = 2 * time.Minute  // controller vs. this PC clock; beyond it we do not trust our timing
-	settleWarn   = 5 * time.Minute  // a change PERCo has not delivered to the controller by now is reported
-	linkCacheTTL = 3 * time.Second  // a "controller connected" answer is reused this long
+	modeKey     = "blocking_mode"
+	releaseLag  = time.Minute      // keep the block a little past the window end
+	releaseLead = 30 * time.Minute // unblock this long before the person's next window starts
+	maxPassAge  = 2 * time.Minute  // older passes are catch-up after downtime: never block on them
+	maxClockGap = 2 * time.Minute  // controller vs. this PC clock; beyond it we do not trust our timing
+	settleWarn  = 5 * time.Minute  // a change PERCo has not delivered to the controller by now is reported
 )
 
 const settleKey = "settle_since" // time of the oldest PERCo write not yet confirmed as delivered to the controller
@@ -70,52 +69,15 @@ type Blocker struct {
 	notify  func()
 	self    string // PERCo login of this service; its own block/unblock events are not "operator" actions
 
-	mu         sync.Mutex // serializes block-row transitions and PERCo writes
-	hmu        sync.Mutex // guards lastHealth/healthErr; read by the dashboard without b.mu
-	lastHealth perco.DeviceHealth
-	healthErr  string
-	linkAt     time.Time // when linkUp last saw the controller connected
+	mu     sync.Mutex // serializes block-row transitions and PERCo writes
+	hmu    sync.Mutex // guards health; read by the dashboard without b.mu
+	health healthState
 }
 
 func (b *Blocker) nowTS() string { return b.now().Format(perco.TimeLayout) }
 
 func (b *Blocker) parse(ts string) (time.Time, error) {
 	return time.ParseInLocation(perco.TimeLayout, ts, b.loc)
-}
-
-// linkUp reports whether PERCo-Web is connected to the controllers. Writes to PERCo are made only then:
-// a change accepted while the controller is off line reaches it later, out of order, and cards can be lost.
-//
-// Only a positive answer is remembered, and only for linkCacheTTL: a burst of passes or a mass release must not
-// pay three extra PERCo requests (about 110 ms) per employee while the event poll waits behind them.
-func (b *Blocker) linkUp(ctx context.Context) bool {
-	now := b.now()
-	b.hmu.Lock()
-	cached := now.Sub(b.linkAt) >= 0 && now.Sub(b.linkAt) < linkCacheTTL
-	b.hmu.Unlock()
-	if cached {
-		return true
-	}
-	h, err := b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
-	b.noteHealth(h, err)
-	up := err == nil && h.Connected
-	b.hmu.Lock()
-	b.linkAt = time.Time{}
-	if up {
-		b.linkAt = now
-	}
-	b.hmu.Unlock()
-	return up
-}
-
-func (b *Blocker) noteHealth(h perco.DeviceHealth, err error) {
-	b.hmu.Lock()
-	defer b.hmu.Unlock()
-	if err != nil {
-		b.healthErr = err.Error()
-		return
-	}
-	b.healthErr, b.lastHealth = "", h
 }
 
 // Mode is the mode chosen on the dashboard.
@@ -518,6 +480,8 @@ type BlockingStatus struct {
 	Open      []store.Block `json:"open"`
 	Today     []store.Block `json:"today"`
 	Checks    []CheckRecord `json:"checks"`
+	// Controller is the live state of the PERCo-Web ↔ controller link, shown in the dashboard header.
+	Controller ControllerStatus `json:"controller"`
 }
 
 func (b *Blocker) Status() (*BlockingStatus, error) {
@@ -567,20 +531,17 @@ func (b *Blocker) Status() (*BlockingStatus, error) {
 	}
 	if since := b.st.GetKV(settleKey); since != "" {
 		if t, err := b.parse(since); err == nil && b.now().Sub(t) > settleWarn {
-			b.hmu.Lock()
-			h, herr := b.lastHealth, b.healthErr
-			b.hmu.Unlock()
-			why := fmt.Sprintf("команд в очереди: %d, не доставлено ресурсов: %d", h.Pending, len(h.Errors))
-			if herr != "" {
-				why = "нет связи с PERCo: " + herr
-			} else if !h.Connected {
-				why = "контроллер не на связи"
-			}
-			s.Warnings = append(s.Warnings, fmt.Sprintf("Изменения блокировок не подтверждены контроллером с %s — %s.", since[11:16], why))
+			why := b.Controller().Text
+			s.Warnings = append(s.Warnings, fmt.Sprintf("Изменения блокировок не подтверждены контроллером с %s. %s.", since[11:16], why))
 		}
 	}
+	s.Controller = b.Controller()
+	if s.Controller.State == StateOffline {
+		s.Warnings = append(s.Warnings, fmt.Sprintf("Контроллер не на связи с PERCo-Web с %s: проходы по картам и блокировки могут не работать.%s",
+			s.Controller.Since[11:16], withMsg(s.Controller.Message)))
+	}
 	if s.Effective != ModeOff && b.self == "admin" {
-		s.Warnings = append(s.Warnings, "Служба работает под оператором admin: блокировки, сделанные людьми под admin, будут считаться блокировками службы. Заведите оператора meal-service.")
+		s.Warnings = append(s.Warnings, "Служба работает под оператором admin: блокировки, сделанные людьми под admin, будут считаться блокировками службы. Заведите отдельного оператора (например, service) и укажите его в config.yaml.")
 	}
 	return s, nil
 }

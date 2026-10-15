@@ -209,7 +209,20 @@ viewFromHash();
 // ---- Blocking of repeat passes: mode switch, active blocks, PIN dialog ----
 const MODE_TEXT = {off: "ВЫКЛ", test: "ТЕСТ", on: "ВКЛ"};
 const STATE_TEXT = {pending: "применяется…", blocked: "заблокирован", operator: "заблокирован оператором"};
+// PERCo ↔ controller link: shown in the header so an outage is visible at once, with details in the tooltip.
+const LINK_TEXT = {ok: "PERCo: на связи", syncing: "PERCo: передача…", offline: "Контроллер: нет связи",
+  unreachable: "PERCo: нет связи", unknown: "PERCo: нет данных"};
+function renderLink() {
+  const pill = $("prcPill"), c = BL && BL.controller;
+  if (!c) { pill.className = "pill static"; pill.textContent = "PERCo: ?"; pill.title = "Нет данных от службы"; return; }
+  pill.className = "pill static st-" + c.state;
+  pill.textContent = LINK_TEXT[c.state] || "PERCo: ?";
+  pill.title = `${c.text}
+С ${c.since.slice(11, 16)} · проверено ${c.checked_at.slice(11, 19)}`;
+}
+
 function renderBlocking() {
+  renderLink();
   const pill = $("blkPill"), panel = $("blkPanel");
   if (!BL) { pill.textContent = "Блокировка: ?"; panel.innerHTML = ""; return; }
   pill.className = "pill " + BL.effective + (BL.force_off ? " forced" : "");

@@ -76,7 +76,7 @@ func Load(path string) (*Config, error) {
 	c.ResetMonitor.LookbackMinutes = 90
 	c.Blocking.MaxHours = 16
 	c.SelfCheck.Enabled = true
-	c.SelfCheck.Times = []string{"20:05", "06:30"}
+	c.SelfCheck.Times = []string{"20:05", "06:30", "06:45"}
 	if err := yaml.Unmarshal(raw, c); err != nil {
 		return nil, fmt.Errorf("config.yaml: %w", err)
 	}
