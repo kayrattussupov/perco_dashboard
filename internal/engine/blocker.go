@@ -25,12 +25,13 @@ const (
 )
 
 const (
-	modeKey     = "blocking_mode"
-	releaseLag  = time.Minute      // keep the block a little past the window end
-	releaseLead = 30 * time.Minute // unblock this long before the person's next window starts
-	maxPassAge  = 2 * time.Minute  // older passes are catch-up after downtime: never block on them
-	maxClockGap = 2 * time.Minute  // controller vs. this PC clock; beyond it we do not trust our timing
-	settleWarn  = 5 * time.Minute  // a change PERCo has not delivered to the controller by now is reported
+	modeKey      = "blocking_mode"
+	releaseLag   = time.Minute      // keep the block a little past the window end
+	releaseLead  = 30 * time.Minute // unblock this long before the person's next window starts
+	maxPassAge   = 2 * time.Minute  // older passes are catch-up after downtime: never block on them
+	maxClockGap  = 2 * time.Minute  // controller vs. this PC clock; beyond it we do not trust our timing
+	settleWarn   = 5 * time.Minute  // a change PERCo has not delivered to the controller by now is reported
+	linkCacheTTL = 3 * time.Second  // a "controller connected" answer is reused this long
 )
 
 const settleKey = "settle_since" // time of the oldest PERCo write not yet confirmed as delivered to the controller
@@ -54,7 +55,8 @@ type blockAPI interface {
 //   - fail open: any doubt (no link, no meal windows, stale event, clock skew) means no block;
 //   - write-ahead: a block row exists before PERCo is touched, so a crash is recovered on start;
 //   - operator wins: blocks/unblocks done by people in PERCo are never overridden;
-//   - a block is held after the window until the next window of the employee (or midnight);
+//   - a block is held after the window until the next window of the employee today; with none left it ends
+//     right after the window, so nothing stays blocked overnight (time control refuses outside windows anyway);
 //   - every service block is released by that time, by max_hours, on start, or by "off".
 type Blocker struct {
 	cfg     *config.Config
@@ -72,6 +74,7 @@ type Blocker struct {
 	hmu        sync.Mutex // guards lastHealth/healthErr; read by the dashboard without b.mu
 	lastHealth perco.DeviceHealth
 	healthErr  string
+	linkAt     time.Time // when linkUp last saw the controller connected
 }
 
 func (b *Blocker) nowTS() string { return b.now().Format(perco.TimeLayout) }
@@ -82,10 +85,27 @@ func (b *Blocker) parse(ts string) (time.Time, error) {
 
 // linkUp reports whether PERCo-Web is connected to the controllers. Writes to PERCo are made only then:
 // a change accepted while the controller is off line reaches it later, out of order, and cards can be lost.
+//
+// Only a positive answer is remembered, and only for linkCacheTTL: a burst of passes or a mass release must not
+// pay three extra PERCo requests (about 110 ms) per employee while the event poll waits behind them.
 func (b *Blocker) linkUp(ctx context.Context) bool {
+	now := b.now()
+	b.hmu.Lock()
+	cached := now.Sub(b.linkAt) >= 0 && now.Sub(b.linkAt) < linkCacheTTL
+	b.hmu.Unlock()
+	if cached {
+		return true
+	}
 	h, err := b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
 	b.noteHealth(h, err)
-	return err == nil && h.Connected
+	up := err == nil && h.Connected
+	b.hmu.Lock()
+	b.linkAt = time.Time{}
+	if up {
+		b.linkAt = now
+	}
+	b.hmu.Unlock()
+	return up
 }
 
 func (b *Blocker) noteHealth(h perco.DeviceHealth, err error) {
@@ -148,12 +168,14 @@ func (b *Blocker) close(r *store.Block, state, note string) {
 }
 
 // outPrefix marks blocks taken for a pass outside every window of the person; the rest of the key is the
-// start of their next window ("out:11:30"; "out:24:00" when none is left today), so each gap blocks once a day.
+// start of their next window ("out:11:30"), so each gap blocks once a day. With no window left today there is
+// nothing to hold the person for and no block is taken.
 const outPrefix = "out:"
 
 // restoreFor returns when a block taken at `at` is released, and the block's key. In a meal window the block is
 // held until 30 minutes before the person's next window (never before this window ends); outside windows, until
-// 30 minutes before the next one. With no later window today it lasts until midnight.
+// 30 minutes before the next one. With no later window today a block taken in a window ends right after it
+// (never held overnight, when the service or PERCo may be down) and a pass outside windows is not blocked.
 func (b *Blocker) restoreFor(mealKey string, userID int64, at time.Time) (time.Time, string, bool) {
 	day := dayStart(at)
 	from, floor := meals.SecOfDay(at), time.Time{}
@@ -171,9 +193,14 @@ func (b *Blocker) restoreFor(mealKey string, userID int64, at time.Time) (time.T
 		}
 		from, floor = end, day.Add(time.Duration(end)*time.Second+releaseLag)
 	}
-	restore, next := day.Add(24*time.Hour), 24*3600
+	var restore time.Time
+	next := 0
 	if begin, ok := meals.NextBegin(b.meals(), from, b.st.StaffTemplates(userID)); ok {
 		restore, next = day.Add(time.Duration(begin)*time.Second-releaseLead), begin
+	} else if floor.IsZero() {
+		return time.Time{}, "", false // outside windows and none left today: nothing to hold them for
+	} else {
+		restore = floor // last window of the day: release right after it
 	}
 	if restore.Before(floor) {
 		restore = floor

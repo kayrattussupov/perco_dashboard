@@ -150,7 +150,7 @@ func TestSelfCheckFindsStrayAndUnknownCards(t *testing.T) {
 	}
 	r.api.blocked[777] = true // blocked by a person, no row of the service
 	r.now = at(19, 10)
-	r.pass(778) // the service's own block (dinner, until midnight): not a problem
+	r.pass(778) // the service's own dinner block (due 19:31, released by the check): never "stray"
 	r.next++
 	r.st.InsertEvent(store.Event{ID: r.next, TS: "2026-10-12 19:20:00", Day: "2026-10-12", Kind: store.KindOther,
 		Code: 1, UserID: 779, FIO: "Здоров Здоров", Meal: "d"})

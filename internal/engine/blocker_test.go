@@ -297,22 +297,33 @@ func TestCrashBetweenIntentAndBlock(t *testing.T) {
 	}
 }
 
-func TestHeldUntilMidnightAfterLastWindow(t *testing.T) {
+// After the last window of the day nothing stays blocked overnight: if the PC is off at night nobody can lift it.
+func TestReleasedRightAfterLastWindow(t *testing.T) {
 	r := newRig(t, ModeOn)
-	r.now = time.Date(2026, 10, 12, 18, 40, 0, 0, tz) // dinner
+	r.now = time.Date(2026, 10, 12, 18, 40, 0, 0, tz) // dinner, window 18:30–19:30
 	r.pass(900)
-	if got := r.state(t, 900).RestoreAt; got != "2026-10-13 00:00:00" {
-		t.Fatalf("restore at %s, want midnight", got)
+	if got := r.state(t, 900).RestoreAt; got != "2026-10-12 19:31:00" {
+		t.Fatalf("restore at %s, want window end 19:30 + 1 min", got)
 	}
-	r.now = time.Date(2026, 10, 12, 23, 30, 0, 0, tz)
+	r.now = time.Date(2026, 10, 12, 19, 30, 0, 0, tz)
 	r.tick(t)
 	if !r.api.blocked[900] {
-		t.Fatal("released before midnight")
+		t.Fatal("released before the window ended")
 	}
-	r.now = time.Date(2026, 10, 13, 0, 0, 0, 0, tz)
+	r.now = time.Date(2026, 10, 12, 19, 31, 0, 0, tz)
 	r.tick(t)
-	if r.api.blocked[900] {
-		t.Fatal("must be released at midnight")
+	if r.api.blocked[900] || r.state(t, 900).State != store.BlockReleased {
+		t.Fatal("must be released right after the last window")
+	}
+}
+
+// Breakfast-only employee: no later window today, so the block ends right after breakfast, not at midnight.
+func TestBreakfastOnlyReleasedAfterBreakfast(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.st.UpsertStaff(store.Staff{ID: 900, FIO: "Тест", Templates: []int{3}}, "")
+	r.pass(900)
+	if got := r.state(t, 900).RestoreAt; got != "2026-10-12 08:16:00" {
+		t.Fatalf("restore at %s, want 08:16 (window end 08:15 + 1 min)", got)
 	}
 }
 
@@ -365,8 +376,8 @@ func TestPassOutsideWindowAfterLastWindow(t *testing.T) {
 	r := newRig(t, ModeOn)
 	r.now = time.Date(2026, 10, 12, 21, 0, 0, 0, tz)
 	r.pass(900)
-	if s := r.state(t, 900); s.RestoreAt != "2026-10-13 00:00:00" || s.Meal != "out:24:00" {
-		t.Fatalf("block %+v, want restore at midnight", s)
+	if r.api.blocked[900] || len(r.api.sets) != 0 {
+		t.Fatal("no window left today: nothing to block for (time control refuses outside windows)")
 	}
 }
 
