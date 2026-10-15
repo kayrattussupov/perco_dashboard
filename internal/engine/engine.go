@@ -86,6 +86,7 @@ func (e *Engine) Run(ctx context.Context) {
 	go e.every(ctx, time.Duration(e.cfg.StaffRefreshMinutes)*time.Minute, "сотрудники", e.syncStaff)
 	go e.every(ctx, 10*time.Minute, "окна питания", e.loadMeals)
 	go e.every(ctx, 15*time.Second, "блокировки", e.blocker.Tick) // first run at start: recover after downtime
+	go e.every(ctx, 30*time.Second, "проверки", e.blocker.SelfCheckTick) // a check missed while the PC was off runs at start
 	if e.cfg.BackupReset {
 		go e.every(ctx, 20*time.Second, "резервный сброс", e.backupReset)
 	}

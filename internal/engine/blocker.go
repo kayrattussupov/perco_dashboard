@@ -30,7 +30,10 @@ const (
 	releaseLead = 30 * time.Minute // unblock this long before the person's next window starts
 	maxPassAge  = 2 * time.Minute  // older passes are catch-up after downtime: never block on them
 	maxClockGap = 2 * time.Minute  // controller vs. this PC clock; beyond it we do not trust our timing
+	settleWarn  = 5 * time.Minute  // a change PERCo has not delivered to the controller by now is reported
 )
+
+const settleKey = "settle_since" // time of the oldest PERCo write not yet confirmed as delivered to the controller
 
 // PERCo operator actions on an employee (verified on site 2026-10-12).
 const (
@@ -43,6 +46,7 @@ var retryDelays = []time.Duration{15 * time.Second, time.Minute, 5 * time.Minute
 type blockAPI interface {
 	StaffBlockState(ctx context.Context, id int64) (blocked, active bool, err error)
 	SetBlocked(ctx context.Context, id int64, blocked bool) error
+	DeviceHealth(ctx context.Context, deviceIDs []int) (perco.DeviceHealth, error)
 }
 
 // Blocker enforces one pass per meal window by blocking an employee in PERCo after the first
@@ -64,13 +68,34 @@ type Blocker struct {
 	notify  func()
 	self    string // PERCo login of this service; its own block/unblock events are not "operator" actions
 
-	mu sync.Mutex // serializes block-row transitions and PERCo writes
+	mu         sync.Mutex // serializes block-row transitions and PERCo writes
+	hmu        sync.Mutex // guards lastHealth/healthErr; read by the dashboard without b.mu
+	lastHealth perco.DeviceHealth
+	healthErr  string
 }
 
 func (b *Blocker) nowTS() string { return b.now().Format(perco.TimeLayout) }
 
 func (b *Blocker) parse(ts string) (time.Time, error) {
 	return time.ParseInLocation(perco.TimeLayout, ts, b.loc)
+}
+
+// linkUp reports whether PERCo-Web is connected to the controllers. Writes to PERCo are made only then:
+// a change accepted while the controller is off line reaches it later, out of order, and cards can be lost.
+func (b *Blocker) linkUp(ctx context.Context) bool {
+	h, err := b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
+	b.noteHealth(h, err)
+	return err == nil && h.Connected
+}
+
+func (b *Blocker) noteHealth(h perco.DeviceHealth, err error) {
+	b.hmu.Lock()
+	defer b.hmu.Unlock()
+	if err != nil {
+		b.healthErr = err.Error()
+		return
+	}
+	b.healthErr, b.lastHealth = "", h
 }
 
 // Mode is the mode chosen on the dashboard.
@@ -206,6 +231,10 @@ func (b *Blocker) OnPass(ctx context.Context, ev store.Event, passAt time.Time) 
 	}
 	r.ID = id
 
+	if !b.linkUp(ctx) {
+		b.close(&r, store.BlockClosed, "не заблокирован: контроллер не на связи с PERCo")
+		return
+	}
 	blocked, active, err := b.api.StaffBlockState(ctx, ev.UserID)
 	switch {
 	case err != nil:
@@ -225,8 +254,16 @@ func (b *Blocker) OnPass(ctx context.Context, ev store.Event, passAt time.Time) 
 		b.log.Printf("блокировка %s: %v", ev.FIO, err)
 		return
 	}
+	if now, _, err := b.api.StaffBlockState(ctx, ev.UserID); err == nil && !now {
+		// PERCo answered "ok" but the flag is not there: leave the row pending, Tick closes it (fail open).
+		r.LastError = "PERCo не подтвердил блокировку"
+		b.st.UpdateBlock(r)
+		b.log.Printf("блокировка %s: %s", ev.FIO, r.LastError)
+		return
+	}
 	r.State, r.BlockedAt = store.BlockActive, b.nowTS()
 	b.st.UpdateBlock(r)
+	b.markUnsettled()
 	b.st.Audit(r.BlockedAt, "service", "block", fmt.Sprintf("%d %s %s до %s", r.UserID, r.FIO, r.Meal, r.RestoreAt[11:16]))
 	b.log.Printf("заблокирован %s (%s) до %s", r.FIO, r.Meal, r.RestoreAt[11:16])
 	b.notify()
@@ -259,10 +296,33 @@ func (b *Blocker) Tick(ctx context.Context) error {
 		}
 		changed = changed || *r != before
 	}
+	b.checkSettled(ctx)
 	if changed {
 		b.notify()
 	}
 	return nil
+}
+
+// markUnsettled remembers that PERCo was written to and the controller has not yet confirmed receipt.
+func (b *Blocker) markUnsettled() {
+	if b.st.GetKV(settleKey) == "" {
+		b.st.SetKV(settleKey, b.nowTS())
+	}
+}
+
+// checkSettled clears the "unsettled" mark once PERCo has nothing left to deliver to the controller.
+// Caller holds b.mu.
+func (b *Blocker) checkSettled(ctx context.Context) {
+	since := b.st.GetKV(settleKey)
+	if since == "" {
+		return
+	}
+	h, err := b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
+	b.noteHealth(h, err)
+	if err == nil && h.Settled() {
+		b.st.SetKV(settleKey, "")
+		b.log.Printf("изменения доставлены в контроллер (ожидали с %s)", since[11:])
+	}
 }
 
 // reconcilePending resolves a row left between "intent" and "PERCo confirmed" (crash or error).
@@ -310,7 +370,7 @@ func (b *Blocker) tickActive(ctx context.Context, r *store.Block) {
 			return
 		}
 	}
-	b.release(ctx, r, "окно закончилось")
+	b.release(ctx, r, "окно закончилось", false)
 }
 
 // followWindow moves the release time when an operator edits the meal window (never past the deadline).
@@ -332,9 +392,18 @@ func (b *Blocker) followWindow(r *store.Block) {
 	}
 }
 
-// release unblocks a row the service owns. Caller holds b.mu.
-func (b *Blocker) release(ctx context.Context, r *store.Block, why string) bool {
-	blocked, active, err := b.api.StaffBlockState(ctx, r.UserID)
+// release unblocks a row the service owns. Caller holds b.mu. Unless force is set (an operator's explicit
+// order), nothing is written while PERCo is not connected to the controller; the attempt is retried later.
+// A write counts only after PERCo reports the flag cleared; delivery to the controller is confirmed by Tick.
+func (b *Blocker) release(ctx context.Context, r *store.Block, why string, force bool) bool {
+	var err error
+	if !force && !b.linkUp(ctx) {
+		err = errors.New("контроллер не на связи с PERCo — ждём")
+	}
+	var blocked, active bool
+	if err == nil {
+		blocked, active, err = b.api.StaffBlockState(ctx, r.UserID)
+	}
 	if err == nil {
 		switch {
 		case !blocked:
@@ -344,7 +413,12 @@ func (b *Blocker) release(ctx context.Context, r *store.Block, why string) bool 
 			b.close(r, store.BlockClosed, "сотрудник неактивен — блокировку не снимаем")
 			return true
 		}
-		err = b.api.SetBlocked(ctx, r.UserID, false)
+		if err = b.api.SetBlocked(ctx, r.UserID, false); err == nil {
+			var still bool
+			if still, _, err = b.api.StaffBlockState(ctx, r.UserID); err == nil && still {
+				err = errors.New("PERCo не подтвердил снятие блокировки")
+			}
+		}
 	}
 	if err != nil {
 		r.Attempts++
@@ -355,6 +429,7 @@ func (b *Blocker) release(ctx context.Context, r *store.Block, why string) bool 
 		return false
 	}
 	b.close(r, store.BlockReleased, why)
+	b.markUnsettled()
 	b.st.Audit(r.ClosedAt, "service", "unblock", fmt.Sprintf("%d %s: %s", r.UserID, r.FIO, why))
 	b.log.Printf("разблокирован %s: %s", r.FIO, why)
 	return true
@@ -377,7 +452,7 @@ func (b *Blocker) ReleaseAll(ctx context.Context, actor, why string) (released, 
 		if r.State != store.BlockActive {
 			continue
 		}
-		if b.release(ctx, r, why+" ("+actor+")") {
+		if b.release(ctx, r, why+" ("+actor+")", true) {
 			released++
 		} else {
 			failed++
@@ -399,7 +474,7 @@ func (b *Blocker) ReleaseOne(ctx context.Context, id int64, actor string) error 
 	if r.State != store.BlockActive && r.State != store.BlockHeld && r.State != store.BlockPending {
 		return errors.New("блокировка уже закрыта")
 	}
-	ok := b.release(ctx, &r, "снято вручную ("+actor+")")
+	ok := b.release(ctx, &r, "снято вручную ("+actor+")", true)
 	b.notify()
 	if !ok {
 		return errors.New(r.LastError)
@@ -415,6 +490,7 @@ type BlockingStatus struct {
 	Warnings  []string      `json:"warnings"`
 	Open      []store.Block `json:"open"`
 	Today     []store.Block `json:"today"`
+	Checks    []CheckRecord `json:"checks"`
 }
 
 func (b *Blocker) Status() (*BlockingStatus, error) {
@@ -448,6 +524,33 @@ func (b *Blocker) Status() (*BlockingStatus, error) {
 	}
 	if held > 0 {
 		s.Warnings = append(s.Warnings, fmt.Sprintf("Заблокированы оператором поверх блокировки службы: %d чел. Служба их не разблокирует.", held))
+	}
+	s.Checks = []CheckRecord{}
+	if b.cfg.SelfCheck.Enabled {
+		for _, hm := range b.cfg.SelfCheck.Times {
+			rec, ok := b.CheckResult(hm)
+			if !ok {
+				continue
+			}
+			s.Checks = append(s.Checks, rec)
+			if t, err := b.parse(rec.RanAt); !rec.OK && err == nil && b.now().Sub(t) < 26*time.Hour {
+				s.Warnings = append(s.Warnings, fmt.Sprintf("Проверка %s (%s): %s", rec.Time, rec.RanAt[:16], strings.Join(rec.Problems, "; ")))
+			}
+		}
+	}
+	if since := b.st.GetKV(settleKey); since != "" {
+		if t, err := b.parse(since); err == nil && b.now().Sub(t) > settleWarn {
+			b.hmu.Lock()
+			h, herr := b.lastHealth, b.healthErr
+			b.hmu.Unlock()
+			why := fmt.Sprintf("команд в очереди: %d, не доставлено ресурсов: %d", h.Pending, len(h.Errors))
+			if herr != "" {
+				why = "нет связи с PERCo: " + herr
+			} else if !h.Connected {
+				why = "контроллер не на связи"
+			}
+			s.Warnings = append(s.Warnings, fmt.Sprintf("Изменения блокировок не подтверждены контроллером с %s — %s.", since[11:16], why))
+		}
 	}
 	if s.Effective != ModeOff && b.self == "admin" {
 		s.Warnings = append(s.Warnings, "Служба работает под оператором admin: блокировки, сделанные людьми под admin, будут считаться блокировками службы. Заведите оператора meal-service.")

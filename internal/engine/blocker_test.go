@@ -11,6 +11,7 @@ import (
 
 	"perco-meal/internal/config"
 	"perco-meal/internal/meals"
+	"perco-meal/internal/perco"
 	"perco-meal/internal/store"
 )
 
@@ -19,6 +20,18 @@ type fakePERCo struct {
 	active  map[int64]bool
 	fail    error // returned by every call while set
 	sets    []string
+
+	offline      bool     // controller not connected to PERCo
+	pending      int      // commands PERCo has not delivered yet
+	devErrors    []string // resources not transferred
+	ignoreUnlock bool     // PERCo says "ok" to an unblock but the flag stays set
+}
+
+func (f *fakePERCo) DeviceHealth(_ context.Context, _ []int) (perco.DeviceHealth, error) {
+	if f.fail != nil {
+		return perco.DeviceHealth{}, f.fail
+	}
+	return perco.DeviceHealth{Connected: !f.offline, Pending: f.pending, Errors: f.devErrors}, nil
 }
 
 func (f *fakePERCo) StaffBlockState(_ context.Context, id int64) (bool, bool, error) {
@@ -33,7 +46,9 @@ func (f *fakePERCo) SetBlocked(_ context.Context, id int64, v bool) error {
 	if f.fail != nil {
 		return f.fail
 	}
-	f.blocked[id] = v
+	if v || !f.ignoreUnlock {
+		f.blocked[id] = v
+	}
 	if v {
 		f.sets = append(f.sets, "block")
 	} else {

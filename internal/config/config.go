@@ -38,8 +38,16 @@ type Config struct {
 		EventIDs        []int `yaml:"event_ids"`
 		LookbackMinutes int   `yaml:"lookback_minutes"`
 	} `yaml:"reset_monitor"`
-	BackupReset bool     `yaml:"backup_reset"`
-	Blocking    Blocking `yaml:"blocking"`
+	BackupReset bool      `yaml:"backup_reset"`
+	Blocking    Blocking  `yaml:"blocking"`
+	SelfCheck   SelfCheck `yaml:"selfcheck"`
+}
+
+// SelfCheck configures the daily health checks: the service verifies at these local times that the
+// controller is connected and in sync, nobody is left blocked by mistake and no card went missing.
+type SelfCheck struct {
+	Enabled bool     `yaml:"enabled"`
+	Times   []string `yaml:"times"` // "HH:MM" in the PERCo server time zone
 }
 
 // Blocking configures one-pass-per-meal enforcement by temporarily blocking employees in PERCo.
@@ -67,6 +75,8 @@ func Load(path string) (*Config, error) {
 	}
 	c.ResetMonitor.LookbackMinutes = 90
 	c.Blocking.MaxHours = 16
+	c.SelfCheck.Enabled = true
+	c.SelfCheck.Times = []string{"20:05", "06:30"}
 	if err := yaml.Unmarshal(raw, c); err != nil {
 		return nil, fmt.Errorf("config.yaml: %w", err)
 	}
@@ -75,6 +85,11 @@ func Load(path string) (*Config, error) {
 	}
 	if len(c.Meals) == 0 {
 		return nil, errors.New("config.yaml: не задан список meals")
+	}
+	for _, t := range c.SelfCheck.Times {
+		if _, err := time.Parse("15:04", t); err != nil {
+			return nil, fmt.Errorf("config.yaml: selfcheck.times: %q — нужен формат ЧЧ:ММ", t)
+		}
 	}
 	if len(c.DeviceIDs) == 0 {
 		return nil, errors.New("config.yaml: не задан device_ids")
