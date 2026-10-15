@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	healthEvery  = 3 * time.Second  // how often the PERCo ↔ controller link is read in the background
-	healthStale  = 30 * time.Second // older data is shown as "no data"
+	healthEvery  = 15 * time.Second // how often the PERCo ↔ controller link is read in the background
+	healthStale  = 45 * time.Second // older data is shown as "no data"
 	linkCacheTTL = 3 * time.Second  // a "controller connected" reading is reused this long by the write gate
 )
 

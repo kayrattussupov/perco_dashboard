@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"perco-meal/internal/perco"
 	"perco-meal/internal/store"
 )
 
@@ -134,5 +135,21 @@ func TestBlockedNowCountsEveryoneBlocked(t *testing.T) {
 	r.b.BlockedLoop(context.Background())
 	if s, _ := r.b.Status(); s.Blocked.Error == "" || !s.Blocked.Known {
 		t.Fatalf("a failed reading keeps the last numbers and reports the error: %+v", s.Blocked)
+	}
+}
+
+// While PERCo-Web is unreachable the whole staff table is not read: it would only add load to a failing server.
+func TestBlockedLoopSkipsWhilePERCoDown(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.b.noteHealth(perco.DeviceHealth{}, errors.New("нет сети"))
+	r.api.blocked[777] = true
+	r.b.BlockedLoop(context.Background())
+	if s, _ := r.b.Status(); s.Blocked.Known {
+		t.Fatalf("PERCo is down: the table must not be read: %+v", s.Blocked)
+	}
+	r.b.noteHealth(perco.DeviceHealth{Connected: true}, nil)
+	r.b.BlockedLoop(context.Background())
+	if s, _ := r.b.Status(); !s.Blocked.Known || s.Blocked.Count != 1 {
+		t.Fatalf("PERCo is back: %+v", s.Blocked)
 	}
 }

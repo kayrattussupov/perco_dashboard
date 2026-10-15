@@ -11,7 +11,7 @@ import (
 	"perco-meal/internal/store"
 )
 
-const blockedEvery = 10 * time.Second // how often "who is blocked in PERCo right now" is read
+const blockedEvery = time.Minute // how often "who is blocked in PERCo right now" is read (the whole staff table)
 
 // blockedSnapshot is the last reading of the blocked employees, guarded by Blocker.hmu.
 type blockedSnapshot struct {
@@ -35,6 +35,13 @@ type BlockedNow struct {
 // BlockedLoop reads the blocked employees from PERCo in the background; it never fails the loop: an error is
 // part of what the dashboard shows.
 func (b *Blocker) BlockedLoop(ctx context.Context) error {
+	// While PERCo-Web is unreachable, do not add a whole-table read to the failing requests.
+	b.hmu.Lock()
+	down := b.health.err != ""
+	b.hmu.Unlock()
+	if down {
+		return nil
+	}
 	people, err := b.api.BlockedStaff(ctx)
 	if ctx.Err() != nil {
 		return nil

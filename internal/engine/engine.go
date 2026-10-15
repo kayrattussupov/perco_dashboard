@@ -38,10 +38,11 @@ type Engine struct {
 	log *log.Logger
 	loc *time.Location
 
-	mu      sync.RWMutex
-	meals   []meals.Meal
-	lastOK  time.Time
-	lastErr string
+	mu         sync.RWMutex
+	meals      []meals.Meal
+	lastOK     time.Time
+	lastErr    string
+	lastErrLog time.Time // the error text changes with every request URL: log it at most once a minute
 
 	subsMu sync.Mutex
 	subs   map[chan struct{}]struct{}
@@ -90,8 +91,8 @@ func (e *Engine) Meals() []meals.Meal {
 func (e *Engine) Run(ctx context.Context) {
 	go e.every(ctx, time.Duration(e.cfg.StaffRefreshMinutes)*time.Minute, "сотрудники", e.syncStaff)
 	go e.every(ctx, 10*time.Minute, "окна питания", e.loadMeals)
-	go e.every(ctx, 15*time.Second, "блокировки", e.blocker.Tick)        // first run at start: recover after downtime
-	go e.every(ctx, healthEvery, "контроллер", e.blocker.HealthLoop)     // shown in the header; also feeds the write gate
+	go e.every(ctx, 15*time.Second, "блокировки", e.blocker.Tick)    // first run at start: recover after downtime
+	go e.every(ctx, healthEvery, "контроллер", e.blocker.HealthLoop) // shown in the header; also feeds the write gate
 	go e.every(ctx, blockedEvery, "заблокированные", e.blocker.BlockedLoop)
 	go e.every(ctx, 30*time.Second, "проверки", e.blocker.SelfCheckTick) // a check missed while the PC was off runs at start
 	if e.cfg.BackupReset {
@@ -176,8 +177,9 @@ func (e *Engine) setOK() {
 
 func (e *Engine) setErr(err error) {
 	e.mu.Lock()
-	if e.lastErr != err.Error() {
+	if e.lastErr == "" || time.Since(e.lastErrLog) >= time.Minute {
 		e.log.Printf("опрос событий: %v", err)
+		e.lastErrLog = time.Now()
 	}
 	e.lastErr = err.Error()
 	e.mu.Unlock()
