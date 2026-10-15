@@ -68,8 +68,8 @@ func Load(path string) (*Config, error) {
 		Listen:              ":8080",
 		DB:                  "perco-meal.db",
 		UTCOffsetHours:      5,
-		PollSeconds:         1,
-		StaffRefreshMinutes: 30,
+		PollSeconds:         2,
+		StaffRefreshMinutes: 60,
 		PassEventIDs:        []int{17},
 		DoorEventIDs:        []int{31},
 	}
@@ -91,6 +91,9 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("config.yaml: selfcheck.times: %q — нужен формат ЧЧ:ММ", t)
 		}
 	}
+	// Protect PERCo from an over-eager config: it hung under one request per second.
+	c.PollSeconds = max(c.PollSeconds, 2)
+	c.StaffRefreshMinutes = max(c.StaffRefreshMinutes, 30)
 	if len(c.DeviceIDs) == 0 {
 		return nil, errors.New("config.yaml: не задан device_ids")
 	}

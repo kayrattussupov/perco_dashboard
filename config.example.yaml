@@ -7,8 +7,8 @@ perco:
 listen: ":8080"              # дашборд: http://<этот-ПК>:8080
 db: perco-meal.db
 utc_offset_hours: 5          # временная зона сервера PERCo
-poll_seconds: 1
-staff_refresh_minutes: 30
+poll_seconds: 2              # не меньше 2: чаще PERCo-Web подвисает
+staff_refresh_minutes: 60    # не меньше 30
 
 device_ids: [2]              # «Односторонний замок №1» — вход в «Столовая1»
 

@@ -31,6 +31,7 @@ const (
 	maxPassAge  = 2 * time.Minute  // older passes are catch-up after downtime: never block on them
 	maxClockGap = 2 * time.Minute  // controller vs. this PC clock; beyond it we do not trust our timing
 	settleWarn  = 5 * time.Minute  // a change PERCo has not delivered to the controller by now is reported
+	heldRecheck = 2 * time.Minute  // how often a block held by an operator is re-read from PERCo
 )
 
 const settleKey = "settle_since" // time of the oldest PERCo write not yet confirmed as delivered to the controller
@@ -70,10 +71,12 @@ type Blocker struct {
 	notify  func()
 	self    string // PERCo login of this service; its own block/unblock events are not "operator" actions
 
-	mu     sync.Mutex // serializes block-row transitions and PERCo writes
-	hmu    sync.Mutex // guards health; read by the dashboard without b.mu
+	mu         sync.Mutex // serializes block-row transitions and PERCo writes
+	hmu        sync.Mutex // guards health; read by the dashboard without b.mu
 	health     healthState
 	blockedNow blockedSnapshot
+
+	heldAt map[int64]time.Time // last PERCo read of an operator-held block; guarded by mu
 }
 
 func (b *Blocker) nowTS() string { return b.now().Format(perco.TimeLayout) }
@@ -281,8 +284,22 @@ func (b *Blocker) Tick(ctx context.Context) error {
 		case store.BlockActive:
 			b.tickActive(ctx, r)
 		case store.BlockHeld:
-			if blocked, _, err := b.api.StaffBlockState(ctx, r.UserID); err == nil && !blocked {
-				b.close(r, store.BlockClosed, "оператор снял свою блокировку")
+			// The operator's unblock usually arrives in the event log already: no PERCo request needed.
+			if ops, err := b.st.OperatorActions(r.UserID, r.CreatedAt, b.self); err == nil && len(ops) > 0 &&
+				ops[len(ops)-1].Code == evStaffUnblocked {
+				b.close(r, store.BlockClosed, "разблокирован оператором "+ops[len(ops)-1].Actor)
+				delete(b.heldAt, r.UserID)
+				break
+			}
+			if b.heldAt == nil {
+				b.heldAt = map[int64]time.Time{}
+			}
+			if now := b.now(); now.Sub(b.heldAt[r.UserID]) >= heldRecheck {
+				b.heldAt[r.UserID] = now
+				if blocked, _, err := b.api.StaffBlockState(ctx, r.UserID); err == nil && !blocked {
+					b.close(r, store.BlockClosed, "оператор снял свою блокировку")
+					delete(b.heldAt, r.UserID)
+				}
 			}
 		}
 		changed = changed || *r != before

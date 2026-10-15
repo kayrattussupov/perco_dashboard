@@ -21,9 +21,14 @@ import (
 
 const (
 	pageRows       = 500
-	overlap        = 10 * time.Minute // re-read window to catch late controller events
-	fullResyncEach = 10 * time.Minute
-	staffWorkers   = 4
+	quickOverlap   = 30 * time.Second // every poll re-reads only this much behind the last event
+	deepOverlap    = 10 * time.Minute // re-read window to catch late controller events
+	deepEach       = 2 * time.Minute
+	fullResyncEach = 30 * time.Minute
+	staffWorkers   = 2
+	staffPause     = 100 * time.Millisecond // spacing between employee requests so PERCo is not flooded
+	pagePause      = 300 * time.Millisecond // spacing between event pages of a big read
+	maxBackoff     = 30 * time.Second       // longest wait between polls while PERCo fails
 )
 
 type Engine struct {
@@ -95,23 +100,49 @@ func (e *Engine) Run(ctx context.Context) {
 
 	tick := time.NewTicker(time.Duration(e.cfg.PollSeconds) * time.Second)
 	defer tick.Stop()
-	var lastFull time.Time
+	var lastFull, lastDeep time.Time
+	var failures int
 	for {
 		full := time.Since(lastFull) > fullResyncEach
-		if err := e.poll(ctx, full); err != nil {
+		deep := full || time.Since(lastDeep) > deepEach
+		if err := e.poll(ctx, full, deep); err != nil {
 			e.setErr(err)
+			failures++
 		} else {
 			e.setOK()
+			failures = 0
+			now := time.Now()
 			if full {
-				lastFull = time.Now()
+				lastFull = now
+			}
+			if deep {
+				lastDeep = now
 			}
 		}
+		// While PERCo is failing or hanging, back off instead of piling more requests onto it.
+		wait := backoff(time.Duration(e.cfg.PollSeconds)*time.Second, failures)
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			if wait > time.Duration(e.cfg.PollSeconds)*time.Second {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(wait):
+				}
+			}
 		}
 	}
+}
+
+// backoff doubles the base interval per consecutive failure, up to maxBackoff.
+func backoff(base time.Duration, failures int) time.Duration {
+	d := base
+	for i := 0; i < failures && d < maxBackoff; i++ {
+		d *= 2
+	}
+	return min(d, max(maxBackoff, base))
 }
 
 func (e *Engine) every(ctx context.Context, d time.Duration, what string, fn func(context.Context) error) {
@@ -152,7 +183,9 @@ func (e *Engine) setErr(err error) {
 	e.mu.Unlock()
 }
 
-func (e *Engine) poll(ctx context.Context, full bool) error {
+// poll reads new events. Normally it asks only for the last seconds; every few minutes (deep) it re-reads
+// 10 minutes to catch late controller events, and every half hour (full) the whole day.
+func (e *Engine) poll(ctx context.Context, full, deep bool) error {
 	now := e.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, e.loc)
 	var from time.Time
@@ -166,7 +199,11 @@ func (e *Engine) poll(ctx context.Context, full bool) error {
 		if err != nil {
 			t = midnight
 		}
-		from = t.Add(-overlap)
+		if deep {
+			from = t.Add(-deepOverlap)
+		} else {
+			from = t.Add(-quickOverlap)
+		}
 	}
 	to := now.Add(time.Hour)
 
@@ -189,6 +226,11 @@ func (e *Engine) poll(ctx context.Context, full bool) error {
 		}
 		if len(rows) < pageRows {
 			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pagePause):
 		}
 	}
 	if maxTS != "" {
