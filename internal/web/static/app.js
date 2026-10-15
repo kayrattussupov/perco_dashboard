@@ -239,7 +239,7 @@ function renderBlocking() {
     ? `<div><small>в PERCo на ${esc(bn.checked_at.slice(11, 19))} · службой: ${bn.service} · вручную: ${bn.manual}${bn.error ? " · данные устарели: " + esc(bn.error) : ""}</small></div>
        ${bn.manual ? `<div class="err">Вручную: ${bn.names.map(esc).join(", ")}</div>` : ""}`
     : `<div><small>${bn && bn.error ? "Нет данных PERCo: " + esc(bn.error) : "Данные PERCo загружаются…"}</small></div>`;
-  panel.innerHTML = `<h3><span>Заблокировано сейчас — <b class="blk-total ${total > 0 ? "some" : ""}">${total}</b></span>${BL.open.length ? '<button class="mini" data-release="all">Снять все</button>' : ""}</h3>
+  panel.innerHTML = `<h3><span>Заблокировано сейчас — <b class="blk-total ${total > 0 ? "some" : ""}">${total}</b></span><button class="mini" data-release="all" title="Снять все блокировки, поставленные службой (нужен PIN)">Разблокировать всех</button></h3>
     ${sub}
     ${rows || `<small>${BL.effective === "off" ? "Блокировка выключена — работает старый метод, PERCo не меняется." : "Сейчас никто не заблокирован."}</small>`}
     ${done ? `<div style="margin-top:8px"><small>Сегодня снято по расписанию: ${done}</small></div>` : ""}`;
@@ -256,7 +256,7 @@ function openDialog(action) {
     $("dlgText").textContent = "ВЫКЛ — старый метод: только дашборд, PERCo не меняется; при выключении все блокировки службы снимаются сразу. ТЕСТ — только сотрудники из test_user_ids. ВКЛ — все.";
   } else if (action === "all") {
     $("dlgTitle").textContent = "Снять все блокировки службы";
-    $("dlgText").textContent = "Будут разблокированы все, кого заблокировала служба. Блокировки, поставленные операторами, не трогаются. Режим не меняется.";
+    $("dlgText").textContent = "Будут разблокированы все, кого заблокировала служба" + (BL && BL.open.length ? ` (${BL.open.length})` : ", сейчас таких нет") + ". Блокировки, поставленные операторами, не трогаются. Режим не меняется. Нужен PIN.";
   } else {
     const b = BL.open.find(x => String(x.id) === action);
     $("dlgTitle").textContent = "Разблокировать";
