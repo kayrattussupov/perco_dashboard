@@ -283,6 +283,59 @@ func (c *Client) SetBlocked(ctx context.Context, id int64, blocked bool) error {
 	return nil
 }
 
+// DeviceHealth is the link state between PERCo-Web and the controllers, as seen by /devices/state.
+type DeviceHealth struct {
+	Connected bool     // every controller reports connect_state == 1
+	Pending   int      // commands PERCo still has to deliver (sum of cmd_count)
+	Errors    []string // resources not transferred to the devices (/devices/{id}/errors)
+	Message   string   // controller status text, for logs
+}
+
+// Settled means PERCo is on line with the controllers and has nothing left to deliver to them.
+func (h DeviceHealth) Settled() bool { return h.Connected && h.Pending == 0 && len(h.Errors) == 0 }
+
+// DeviceHealth reads the controller link state and the not-yet-delivered resources of the given devices.
+func (c *Client) DeviceHealth(ctx context.Context, deviceIDs []int) (DeviceHealth, error) {
+	var st struct {
+		Items []struct {
+			ID           int    `json:"id"`
+			ConnectState int    `json:"connect_state"`
+			CmdCount     int    `json:"cmd_count"`
+			Message      string `json:"connect_message"`
+		} `json:"items"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/devices/state", nil, nil, &st); err != nil {
+		return DeviceHealth{}, err
+	}
+	h := DeviceHealth{Connected: len(st.Items) > 0}
+	ids := map[int]bool{}
+	for _, d := range deviceIDs {
+		ids[d] = true
+	}
+	for _, it := range st.Items {
+		ids[it.ID] = true
+		h.Pending += it.CmdCount
+		if it.ConnectState != 1 {
+			h.Connected = false
+		}
+		if h.Message == "" || it.ConnectState != 1 {
+			h.Message = it.Message
+		}
+	}
+	for id := range ids {
+		var errs []struct {
+			Name string `json:"name"`
+		}
+		if err := c.do(ctx, http.MethodGet, "/devices/"+strconv.Itoa(id)+"/errors", nil, nil, &errs); err != nil {
+			return DeviceHealth{}, err
+		}
+		for _, e := range errs {
+			h.Errors = append(h.Errors, e.Name)
+		}
+	}
+	return h, nil
+}
+
 // ResetAntipass sends "Сброс зональности" (cmdType 6) to a lock device.
 func (c *Client) ResetAntipass(ctx context.Context, deviceID int) error {
 	body := map[string]int{"cmdNumber": 1, "cmdType": 6, "cmdValue": 0}
