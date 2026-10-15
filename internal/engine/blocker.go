@@ -25,12 +25,13 @@ const (
 )
 
 const (
-	modeKey     = "blocking_mode"
-	releaseLag  = time.Minute      // keep the block a little past the window end
-	releaseLead = 30 * time.Minute // unblock this long before the person's next window starts
-	maxPassAge  = 2 * time.Minute  // older passes are catch-up after downtime: never block on them
-	maxClockGap = 2 * time.Minute  // controller vs. this PC clock; beyond it we do not trust our timing
-	settleWarn  = 5 * time.Minute  // a change PERCo has not delivered to the controller by now is reported
+	modeKey      = "blocking_mode"
+	releaseLag   = time.Minute      // keep the block a little past the window end
+	releaseLead  = 30 * time.Minute // unblock this long before the person's next window starts
+	maxPassAge   = 2 * time.Minute  // older passes are catch-up after downtime: never block on them
+	maxClockGap  = 2 * time.Minute  // controller vs. this PC clock; beyond it we do not trust our timing
+	settleWarn   = 5 * time.Minute  // a change PERCo has not delivered to the controller by now is reported
+	linkCacheTTL = 3 * time.Second  // a "controller connected" answer is reused this long
 )
 
 const settleKey = "settle_since" // time of the oldest PERCo write not yet confirmed as delivered to the controller
@@ -72,6 +73,7 @@ type Blocker struct {
 	hmu        sync.Mutex // guards lastHealth/healthErr; read by the dashboard without b.mu
 	lastHealth perco.DeviceHealth
 	healthErr  string
+	linkAt     time.Time // when linkUp last saw the controller connected
 }
 
 func (b *Blocker) nowTS() string { return b.now().Format(perco.TimeLayout) }
@@ -82,10 +84,27 @@ func (b *Blocker) parse(ts string) (time.Time, error) {
 
 // linkUp reports whether PERCo-Web is connected to the controllers. Writes to PERCo are made only then:
 // a change accepted while the controller is off line reaches it later, out of order, and cards can be lost.
+//
+// Only a positive answer is remembered, and only for linkCacheTTL: a burst of passes or a mass release must not
+// pay three extra PERCo requests (about 110 ms) per employee while the event poll waits behind them.
 func (b *Blocker) linkUp(ctx context.Context) bool {
+	now := b.now()
+	b.hmu.Lock()
+	cached := now.Sub(b.linkAt) >= 0 && now.Sub(b.linkAt) < linkCacheTTL
+	b.hmu.Unlock()
+	if cached {
+		return true
+	}
 	h, err := b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
 	b.noteHealth(h, err)
-	return err == nil && h.Connected
+	up := err == nil && h.Connected
+	b.hmu.Lock()
+	b.linkAt = time.Time{}
+	if up {
+		b.linkAt = now
+	}
+	b.hmu.Unlock()
+	return up
 }
 
 func (b *Blocker) noteHealth(h perco.DeviceHealth, err error) {
