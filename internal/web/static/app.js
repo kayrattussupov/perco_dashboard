@@ -109,13 +109,12 @@ function rB() {
 
 function badge(e) {
   if (e.kind === "deny") return `<span class="badge warn" title="${esc(e.name)}">Отказ: ${esc(denyReason(e))}</span>`;
-  if (e.kind === "door") return '<span class="badge amber">Дверь не закрыта</span>';
   if (!e.meal) return '<span class="badge">Вне окна</span>';
   return e.repeat ? `<span class="badge warn">${e.seq}-й раз</span>` : '<span class="badge ok">1-й раз</span>';
 }
 
 function rC(newIds) {
-  const evs = [...D.events].reverse().slice(0, 60);
+  const evs = D.events.filter(e => e.kind !== "door").reverse().slice(0, 60); // "door not closed" is noise here: no door
   $("feed").innerHTML = evs.map(e => {
     const p = person(e.user_id, e.fio);
     return `<div class="ev ${newIds.has(e.id) ? "new" : ""}"><div class="tm">${hms(e.ts)}</div>${avatar(p)}
@@ -124,12 +123,11 @@ function rC(newIds) {
   }).join("") || '<div class="empty">С 00:00 проходов ещё не было.</div>';
 
   const g = grouped(), reps = g.filter(r => r.list.some(e => e.repeat));
-  const denied = D.events.filter(e => e.kind === "deny").length, doors = D.events.filter(e => e.kind === "door").length;
+  const denied = D.events.filter(e => e.kind === "deny").length;
   $("cStats").innerHTML = `<div class="kv"><span>Проходов</span><b>${passes().length}</b></div>
     <div class="kv"><span>Сотрудников</span><b>${new Set(passes().map(e => e.user_id)).size}</b></div>
     <div class="kv"><span>С повторами</span><b style="color:var(--warn)">${reps.length}</b></div>
-    <div class="kv"><span>Отказов контроллера</span><b style="color:var(--warn)">${denied}</b></div>
-    <div class="kv"><span>Дверь не закрыта</span><b style="color:var(--amber)">${doors}</b></div>`;
+    <div class="kv"><span>Отказов контроллера</span><b style="color:var(--warn)">${denied}</b></div>`;
   $("cRep").innerHTML = reps.map(r => `<div><span>${esc(r.p.fio)}</span><span>${r.list.filter(e => e.repeat).length}</span></div>`).join("")
     || '<div style="color:var(--muted)">Повторов нет</div>';
 }
