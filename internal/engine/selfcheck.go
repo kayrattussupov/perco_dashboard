@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"perco-meal/internal/store"
@@ -15,7 +14,6 @@ import (
 const (
 	checkKeyPrefix = "selfcheck:"      // kv: last result per configured time, e.g. "selfcheck:06:30"
 	checkGrace     = 30 * time.Minute  // how long a due check waits for the controller before it reports the outage
-	checkWorkers   = 8                 // parallel employee reads during a check
 	maxNames       = 8                 // employees named in one problem line
 )
 
@@ -150,66 +148,29 @@ func (b *Blocker) overdueBlocks() []string {
 	return []string{fmt.Sprintf("Не снята блокировка по окончании срока: %s", nameList(names))}
 }
 
-// strayBlocks reads every active employee from PERCo and lists those blocked without an open row of this
-// service: left over from a lost database, or set by hand. They are only reported, never touched.
+// strayBlocks lists employees blocked in PERCo without an open row of this service: left over from a lost
+// database, or set by hand. They are only reported, never touched.
 func (b *Blocker) strayBlocks(ctx context.Context) []string {
-	staff, err := b.st.AllStaff()
+	people, err := b.api.BlockedStaff(ctx)
 	if err != nil {
-		return []string{"Не удалось прочитать список сотрудников: " + err.Error()}
+		return []string{"Не удалось получить список заблокированных: " + err.Error()}
 	}
 	open, _ := b.st.OpenBlocks()
 	owned := map[int64]bool{}
 	for _, r := range open {
 		owned[r.UserID] = true
 	}
-
-	var (
-		mu      sync.Mutex
-		stray   []string
-		failed  int
-		wg      sync.WaitGroup
-		jobs    = make(chan store.Staff)
-		checked int
-	)
-	for i := 0; i < checkWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for s := range jobs {
-				blocked, _, err := b.api.StaffBlockState(ctx, s.ID)
-				mu.Lock()
-				switch {
-				case err != nil:
-					failed++
-				case blocked && !owned[s.ID]:
-					stray = append(stray, s.FIO)
-				}
-				checked++
-				mu.Unlock()
-			}
-		}()
-	}
-	for _, s := range staff {
-		if !s.Active {
-			continue
-		}
-		select {
-		case jobs <- s:
-		case <-ctx.Done():
+	var stray []string
+	for _, p := range people {
+		if !owned[p.ID] {
+			stray = append(stray, b.personName(p))
 		}
 	}
-	close(jobs)
-	wg.Wait()
-
-	var out []string
-	if failed > 0 {
-		out = append(out, fmt.Sprintf("Не удалось проверить блокировку у %d сотрудников", failed))
+	if len(stray) == 0 {
+		return nil
 	}
-	if len(stray) > 0 {
-		slices.Sort(stray)
-		out = append(out, fmt.Sprintf("Заблокированы вне службы (%d): %s", len(stray), nameList(stray)))
-	}
-	return out
+	slices.Sort(stray)
+	return []string{fmt.Sprintf("Заблокированы вне службы (%d): %s", len(stray), nameList(stray))}
 }
 
 // unknownCards finds employees whose card the controller rejected as unregistered in the last day although

@@ -28,6 +28,19 @@ type fakePERCo struct {
 	healthCalls  int      // DeviceHealth requests made
 }
 
+func (f *fakePERCo) BlockedStaff(_ context.Context) ([]perco.BlockedPerson, error) {
+	if f.fail != nil {
+		return nil, f.fail
+	}
+	var out []perco.BlockedPerson
+	for id, v := range f.blocked {
+		if v {
+			out = append(out, perco.BlockedPerson{ID: id})
+		}
+	}
+	return out, nil
+}
+
 func (f *fakePERCo) DeviceHealth(_ context.Context, _ []int) (perco.DeviceHealth, error) {
 	f.healthCalls++
 	if f.fail != nil {
@@ -412,5 +425,28 @@ func TestPIN(t *testing.T) {
 	r.b.cfg.Blocking.AdminPIN = ""
 	if r.b.CheckPIN("") {
 		t.Fatal("empty configured PIN must disable admin actions")
+	}
+}
+
+func TestBlockHistoryAndDays(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.pass(900) // 12.10 breakfast
+	r.now = time.Date(2026, 10, 13, 7, 31, 0, 0, tz)
+	r.pass(901) // next day
+	r.pass(902)
+
+	days, err := r.b.BlockDays()
+	if err != nil || len(days) != 2 || days[0].Day != "2026-10-13" || days[0].Count != 2 || days[1].Count != 1 {
+		t.Fatalf("days newest first with counts: %+v err=%v", days, err)
+	}
+	rows, err := r.b.BlockHistory("2026-10-12")
+	if err != nil || len(rows) != 1 || rows[0].UserID != 900 {
+		t.Fatalf("history of the previous day: %+v err=%v", rows, err)
+	}
+	if rows, err := r.b.BlockHistory("2026-10-01"); err != nil || rows == nil || len(rows) != 0 {
+		t.Fatalf("a day without blocks is an empty list, not null: %#v err=%v", rows, err)
+	}
+	if _, err := r.b.BlockHistory("вчера"); err == nil {
+		t.Fatal("a malformed day must be rejected")
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"perco-meal/internal/store"
 )
 
 func (r *rig) health(t *testing.T) ControllerStatus {
@@ -98,5 +100,39 @@ func TestLinkUpReusesBackgroundReading(t *testing.T) {
 	r.b.linkUp(context.Background())
 	if r.api.healthCalls != calls+1 {
 		t.Fatal("an expired reading must be read again")
+	}
+}
+
+// "Blocked now" counts everyone blocked in PERCo, splitting the service's own from manual ones.
+func TestBlockedNowCountsEveryoneBlocked(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.st.UpsertStaff(store.Staff{ID: 777, FIO: "Ручной Блок", Active: true}, "")
+	if s, _ := r.b.Status(); s.Blocked.Known {
+		t.Fatal("no reading yet: the count must not be presented as known")
+	}
+	r.pass(900)               // the service blocks 900
+	r.api.blocked[777] = true // an operator blocked 777
+	if err := r.b.BlockedLoop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s, err := r.b.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bn := s.Blocked
+	if !bn.Known || bn.Count != 2 || bn.Service != 1 || bn.Manual != 1 || len(bn.Names) != 1 || bn.Names[0] != "Ручной Блок" {
+		t.Fatalf("blocked now: %+v", bn)
+	}
+
+	r.api.blocked[777], r.api.blocked[900] = false, false
+	r.b.BlockedLoop(context.Background())
+	if s, _ := r.b.Status(); s.Blocked.Count != 0 {
+		t.Fatalf("nobody blocked: %+v", s.Blocked)
+	}
+
+	r.api.fail = errors.New("нет связи")
+	r.b.BlockedLoop(context.Background())
+	if s, _ := r.b.Status(); s.Blocked.Error == "" || !s.Blocked.Known {
+		t.Fatalf("a failed reading keeps the last numbers and reports the error: %+v", s.Blocked)
 	}
 }

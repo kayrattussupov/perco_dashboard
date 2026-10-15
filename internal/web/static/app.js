@@ -221,7 +221,58 @@ function renderLink() {
 С ${c.since.slice(11, 16)} · проверено ${c.checked_at.slice(11, 19)}`;
 }
 
+// ---- Block history: every block of a chosen day (today by default), previous days one tap away ----
+let histDay = null, histDays = [], histRows = [], histQ = "", histBusy = false, histAgain = false;
+const dayLabel = d => {
+  const t = (D && D.day) || new Date().toISOString().slice(0, 10);
+  if (d === t) return "Сегодня";
+  const y = new Date(t + "T12:00:00Z"); y.setUTCDate(y.getUTCDate() - 1); // UTC arithmetic: no time-zone shift of the date
+  if (d === y.toISOString().slice(0, 10)) return "Вчера";
+  return d.slice(8, 10) + "." + d.slice(5, 7);
+};
+async function loadHistory() {
+  if (histBusy) { histAgain = true; return; }
+  histBusy = true;
+  try {
+    const today = (D && D.day) || null;
+    const rd = await fetch("/api/blocking/days", {cache: "no-store"});
+    histDays = rd.ok ? await rd.json() : [];
+    if (today && !histDays.some(x => x.day === today)) histDays.unshift({day: today, count: 0});
+    if (!histDay || !histDays.some(x => x.day === histDay)) histDay = today || (histDays[0] && histDays[0].day);
+    const rh = histDay ? await fetch("/api/blocking/history?day=" + histDay, {cache: "no-store"}) : null;
+    histRows = rh && rh.ok ? await rh.json() : [];
+  } catch (err) { histRows = []; }
+  finally { histBusy = false; if (histAgain) { histAgain = false; loadHistory(); return; } }
+  renderHistory();
+}
+function histStatus(b) {
+  if (b.state === "released") return "снята " + b.closed_at.slice(11, 16);
+  if (b.state === "blocked") return "заблокирован до " + b.restore_at.slice(11, 16);
+  if (b.state === "operator") return "заблокирован оператором";
+  if (b.state === "pending") return "применяется…";
+  return "закрыта" + (b.note ? ": " + b.note : "");
+}
+function renderHistory() {
+  const box = $("blkHistory");
+  if (!box) return;
+  const q = histQ.trim().toLowerCase();
+  const rows = histRows.filter(b => !q || person(b.user_id, b.fio).fio.toLowerCase().includes(q));
+  const days = histDays.map(d => `<button data-day="${d.day}" aria-pressed="${d.day === histDay}">${dayLabel(d.day)} · ${d.count}</button>`).join("");
+  const list = rows.map(b => `<div class="row${b.last_error ? " bad" : ""}"><span><b>${esc(person(b.user_id, b.fio).fio)}</b><br>
+      <small><span class="${mealCls(b.meal)}">${esc(mealName(b.meal))}</span> · ${esc(histStatus(b))}</small>
+      ${b.last_error ? `<div class="err">Ошибка: ${esc(b.last_error)}</div>` : ""}</span>
+      <span class="tm">${esc((b.blocked_at || b.created_at).slice(11, 16))}</span></div>`).join("");
+  box.innerHTML = `<h3><span>История блокировок — ${histRows.length}</span></h3>
+    <div class="bh-days">${days}</div>
+    <input class="bh-q" id="bhQ" type="search" placeholder="Поиск по фамилии" value="${esc(histQ)}" aria-label="Поиск по истории блокировок">
+    <div class="bh-list">${list || "<small>Блокировок за этот день нет.</small>"}</div>`;
+  box.querySelectorAll("[data-day]").forEach(btn => btn.onclick = () => { histDay = btn.dataset.day; loadHistory(); });
+  const inp = $("bhQ");
+  inp.oninput = () => { histQ = inp.value; const pos = inp.selectionStart; renderHistory(); const n = $("bhQ"); n.focus(); n.setSelectionRange(pos, pos); };
+}
+
 function renderBlocking() {
+  loadHistory();
   renderLink();
   const pill = $("blkPill"), panel = $("blkPanel");
   if (!BL) { pill.textContent = "Блокировка: ?"; panel.innerHTML = ""; return; }
@@ -233,7 +284,14 @@ function renderBlocking() {
       ${b.last_error ? `<div class="err">Не снимается: ${esc(b.last_error)} (попыток: ${b.attempts})</div>` : ""}</span>
       <button class="mini" data-release="${b.id}">Разблокировать</button></div>`).join("");
   const done = BL.today.filter(b => b.state === "released").length;
-  panel.innerHTML = `<h3><span>Активные блокировки — ${BL.open.length}</span>${BL.open.length ? '<button class="mini" data-release="all">Снять все</button>' : ""}</h3>
+  // Total blocked in PERCo at this moment (whoever blocked them); falls back to the service's own rows.
+  const bn = BL.blocked_now, total = bn && bn.known ? bn.count : "—"; // never show 0 when PERCo has not answered
+  const sub = bn && bn.known
+    ? `<div><small>в PERCo на ${esc(bn.checked_at.slice(11, 19))} · службой: ${bn.service} · вручную: ${bn.manual}${bn.error ? " · данные устарели: " + esc(bn.error) : ""}</small></div>
+       ${bn.manual ? `<div class="err">Вручную: ${bn.names.map(esc).join(", ")}</div>` : ""}`
+    : `<div><small>${bn && bn.error ? "Нет данных PERCo: " + esc(bn.error) : "Данные PERCo загружаются…"}</small></div>`;
+  panel.innerHTML = `<h3><span>Заблокировано сейчас — <b class="blk-total ${total > 0 ? "some" : ""}">${total}</b></span>${BL.open.length ? '<button class="mini" data-release="all">Снять все</button>' : ""}</h3>
+    ${sub}
     ${rows || `<small>${BL.effective === "off" ? "Блокировка выключена — работает старый метод, PERCo не меняется." : "Сейчас никто не заблокирован."}</small>`}
     ${done ? `<div style="margin-top:8px"><small>Сегодня снято по расписанию: ${done}</small></div>` : ""}`;
   panel.querySelectorAll("[data-release]").forEach(btn => btn.onclick = () => openDialog(btn.dataset.release));

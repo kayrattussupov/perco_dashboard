@@ -47,6 +47,7 @@ type blockAPI interface {
 	StaffBlockState(ctx context.Context, id int64) (blocked, active bool, err error)
 	SetBlocked(ctx context.Context, id int64, blocked bool) error
 	DeviceHealth(ctx context.Context, deviceIDs []int) (perco.DeviceHealth, error)
+	BlockedStaff(ctx context.Context) ([]perco.BlockedPerson, error)
 }
 
 // Blocker enforces one pass per meal window by blocking an employee in PERCo after the first
@@ -71,7 +72,8 @@ type Blocker struct {
 
 	mu     sync.Mutex // serializes block-row transitions and PERCo writes
 	hmu    sync.Mutex // guards health; read by the dashboard without b.mu
-	health healthState
+	health     healthState
+	blockedNow blockedSnapshot
 }
 
 func (b *Blocker) nowTS() string { return b.now().Format(perco.TimeLayout) }
@@ -482,6 +484,8 @@ type BlockingStatus struct {
 	Checks    []CheckRecord `json:"checks"`
 	// Controller is the live state of the PERCo-Web ↔ controller link, shown in the dashboard header.
 	Controller ControllerStatus `json:"controller"`
+	// Blocked is everyone blocked in PERCo at this moment, whoever blocked them.
+	Blocked BlockedNow `json:"blocked_now"`
 }
 
 func (b *Blocker) Status() (*BlockingStatus, error) {
@@ -539,6 +543,7 @@ func (b *Blocker) Status() (*BlockingStatus, error) {
 		}
 	}
 	s.Controller = b.Controller()
+	s.Blocked = b.BlockedNowStatus(open)
 	if s.Controller.State == StateOffline {
 		s.Warnings = append(s.Warnings, fmt.Sprintf("Контроллер не на связи с PERCo-Web с %s: проходы по картам и блокировки могут не работать.%s",
 			s.Controller.Since[11:16], withMsg(s.Controller.Message)))
@@ -558,4 +563,22 @@ func latestCheck(recs []CheckRecord) *CheckRecord {
 		}
 	}
 	return last
+}
+
+// historyDays is how many past days with blocks the dashboard can browse.
+const historyDays = 14
+
+// BlockDays lists the days that have block rows (today first when it has any).
+func (b *Blocker) BlockDays() ([]store.DayCount, error) { return b.st.BlockDays(historyDays) }
+
+// BlockHistory returns every block row of one day, newest first.
+func (b *Blocker) BlockHistory(day string) ([]store.Block, error) {
+	if _, err := time.Parse("2006-01-02", day); err != nil {
+		return nil, fmt.Errorf("день %q: нужен формат ГГГГ-ММ-ДД", day)
+	}
+	bs, err := b.st.BlocksOfDay(day)
+	if bs == nil {
+		bs = []store.Block{}
+	}
+	return bs, err
 }

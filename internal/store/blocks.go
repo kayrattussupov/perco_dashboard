@@ -127,6 +127,30 @@ func (s *Store) BlocksOfDay(day string) ([]Block, error) {
 	return scanBlocks(s.db.Query(`SELECT `+blockCols+` FROM blocks WHERE day=? ORDER BY id DESC`, day))
 }
 
+// DayCount is the number of block rows of one day.
+type DayCount struct {
+	Day   string `json:"day"`
+	Count int    `json:"count"`
+}
+
+// BlockDays returns the most recent days that have block rows, newest first.
+func (s *Store) BlockDays(limit int) ([]DayCount, error) {
+	rows, err := s.db.Query(`SELECT day, COUNT(*) FROM blocks GROUP BY day ORDER BY day DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DayCount
+	for rows.Next() {
+		var d DayCount
+		if err := rows.Scan(&d.Day, &d.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // OperatorAction is a block/unblock of an employee done in PERCo.
 type OperatorAction struct {
 	Code  int

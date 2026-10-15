@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"perco-meal/internal/engine"
+	"perco-meal/internal/store"
 )
 
 //go:embed static
@@ -94,6 +95,29 @@ func Handler(e *engine.Engine, lg *log.Logger) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, s)
+	})
+	mux.HandleFunc("GET /api/blocking/days", func(w http.ResponseWriter, r *http.Request) {
+		days, err := bl.BlockDays()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if days == nil {
+			days = []store.DayCount{}
+		}
+		writeJSON(w, http.StatusOK, days)
+	})
+	mux.HandleFunc("GET /api/blocking/history", func(w http.ResponseWriter, r *http.Request) {
+		day := r.URL.Query().Get("day")
+		if day == "" {
+			day = e.Now().Format("2006-01-02")
+		}
+		bs, err := bl.BlockHistory(day)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, bs)
 	})
 	// admin wraps state-changing blocking endpoints: PIN required, brute force throttled, every call audited.
 	admin := func(h func(w http.ResponseWriter, r *http.Request, actor string, body map[string]string)) http.HandlerFunc {
