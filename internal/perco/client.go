@@ -283,6 +283,41 @@ func (c *Client) SetBlocked(ctx context.Context, id int64, blocked bool) error {
 	return nil
 }
 
+// IDs encodings for the "ids" query parameter of the mass-edit endpoint. Which ones PERCo accepts for several
+// ids is not verified yet: callers must read the result back.
+const (
+	IDsComma  = "comma"  // ids=1,2,3
+	IDsJSON   = "json"   // ids=[1,2,3]
+	IDsRepeat = "repeat" // ids=1&ids=2&ids=3
+)
+
+// SetBlockedMany blocks or unblocks several employees in one request.
+func (c *Client) SetBlockedMany(ctx context.Context, ids []int64, blocked bool, format string) error {
+	strs := make([]string, len(ids))
+	for i, id := range ids {
+		strs[i] = strconv.FormatInt(id, 10)
+	}
+	q := url.Values{}
+	switch format {
+	case IDsJSON:
+		q.Set("ids", "["+strings.Join(strs, ",")+"]")
+	case IDsRepeat:
+		q["ids"] = strs
+	default:
+		q.Set("ids", strings.Join(strs, ","))
+	}
+	var out struct {
+		Result string `json:"result"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/users/staff", q, map[string]bool{"is_block": blocked}, &out); err != nil {
+		return err
+	}
+	if out.Result != "ok" {
+		return fmt.Errorf("is_block=%v: ответ PERCo %q", blocked, out.Result)
+	}
+	return nil
+}
+
 // BlockedPerson is an active employee whose is_block flag is set in PERCo.
 type BlockedPerson struct {
 	ID  int64
