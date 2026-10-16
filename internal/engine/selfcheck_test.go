@@ -153,7 +153,7 @@ func TestSelfCheckFindsStrayAndUnknownCards(t *testing.T) {
 	r.now = at(19, 10)
 	r.pass(778) // the service's own dinner block (due 19:31, released by the check): never "stray"
 	r.next++
-	r.st.InsertEvent(store.Event{ID: r.next, TS: "2026-10-12 19:20:00", Day: "2026-10-12", Kind: store.KindOther,
+	r.st.InsertEvent(store.Event{ID: r.next, TS: "2026-10-12 19:20:00", Day: "2026-10-12", Kind: store.KindDeny,
 		Code: 1, UserID: 779, FIO: "Здоров Здоров", Meal: "d"})
 	r.now = at(20, 6)
 	rec := r.selfCheck(t)
@@ -186,7 +186,7 @@ func TestUnknownCardClearsAfterSuccessfulPass(t *testing.T) {
 	r := checkRig(t)
 	r.st.UpsertStaff(store.Staff{ID: 779, FIO: "Здоров Здоров", Active: true}, "")
 	r.next++
-	r.st.InsertEvent(store.Event{ID: r.next, TS: "2026-10-12 19:20:00", Day: "2026-10-12", Kind: store.KindOther,
+	r.st.InsertEvent(store.Event{ID: r.next, TS: "2026-10-12 19:20:00", Day: "2026-10-12", Kind: store.KindDeny,
 		Code: 1, UserID: 779, FIO: "Здоров Здоров", Meal: "d"})
 
 	r.now = at(20, 6)

@@ -252,6 +252,7 @@ func (e *Engine) poll(ctx context.Context, full, deep bool) error {
 // "Проход по идентификатору: с несоответствием …" (529/273/785) while the lock stays shut
 // (verified on site 2026-10-08).
 var builtinDenyIDs = []int{
+	evUnregistered,
 	8,   // Запрет прохода
 	264, // Запрет прохода: несоответствие текущему местоположению
 	273, // Проход по идентификатору: с несоответствием текущему местоположению (antipass)
@@ -260,6 +261,11 @@ var builtinDenyIDs = []int{
 	776, // Запрет прохода: несоответствие временным критериям доступа и текущему местоположению
 	785, // Проход по идентификатору: несоответствие временным критериям доступа и текущему местоположению
 }
+
+// evUnregistered is "Идентификатор не зарегистрирован": the controller does not know the card. Without
+// an employee it is a new card nobody registered; with one, PERCo knows the card but the controller
+// lost it (after the 14.10 outage), and re-registering the card in PERCo-Web sends it again.
+const evUnregistered = 1
 
 // resetEventID is "Очистить пространственные зоны для идентификаторов: Выполнено", logged on the
 // controller (not the lock) when "Сбросить зональность" runs (verified on site 2026-10-08).
@@ -316,6 +322,9 @@ func (e *Engine) handle(ctx context.Context, ev perco.Event) (bool, error) {
 	}
 	if ev.UserName != nil {
 		se.Actor = *ev.UserName
+	}
+	if ev.Identifier != nil {
+		se.Card = strings.TrimSpace(*ev.Identifier)
 	}
 	isNew, err := e.st.InsertEvent(se)
 	if err != nil || !isNew {

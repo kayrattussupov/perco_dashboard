@@ -127,7 +127,8 @@ type Event struct {
 	FIO         *string `json:"fio"`
 	UserID      *int64  `json:"user_id"`
 	DeviceID    *int    `json:"device_id"`
-	UserName    *string `json:"user_name"` // operator login for operator actions
+	UserName    *string `json:"user_name"`  // operator login for operator actions
+	Identifier  *string `json:"identifier"` // card number presented at the reader
 }
 
 type StaffBrief struct {

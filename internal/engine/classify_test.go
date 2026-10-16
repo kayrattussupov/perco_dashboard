@@ -22,7 +22,7 @@ func TestClassify(t *testing.T) {
 		{529, "Проход по идентификатору: с несоответствием временным критериям доступа", &dev2, store.KindDeny},
 		{273, "Проход по идентификатору: с несоответствием текущему местоположению", &dev2, store.KindDeny},
 		{31, "ИУ не закрыто после прохода по идентификатору: ", &dev2, store.KindDoor},
-		{1, "Идентификатор не зарегистрирован", &dev2, store.KindOther},
+		{1, "Идентификатор не зарегистрирован", &dev2, store.KindDeny},
 		{17, "Проход по идентификатору", &dev3, ""},                   // other door, not the canteen
 		{500000, "Вход оператора в систему", nil, ""},                 // operator events are ignored
 		{9999, "Запрет прохода: что-то новое", &dev2, store.KindDeny}, // unknown refusal caught by name
