@@ -233,3 +233,12 @@ func TestLoadCapsRate(t *testing.T) {
 		t.Fatalf("6 req/s must be refused, exit %d\n%s", code, out)
 	}
 }
+
+func TestBaselineFlagsHeavyEventQuery(t *testing.T) {
+	b, f, out := newBench(t)
+	f.eventsLag = 2 * time.Second // state answers instantly in the fake: any event lag is "heavy"
+	b.baseline(context.Background())
+	if !strings.Contains(out.String(), "запрос событий тяжёлый") {
+		t.Fatalf("heavy event query must be flagged:\n%s", out)
+	}
+}

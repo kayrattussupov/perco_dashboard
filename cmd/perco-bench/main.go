@@ -252,21 +252,32 @@ func (b *bench) preflight(ctx context.Context, ids []int64) error {
 	return nil
 }
 
-// baseline records how fast PERCo answers plain reads before anything is written.
+// baseline compares a light request (controller state) with the service's event poll (all events of the last
+// 5 minutes): if the poll is much slower, PERCo's event query itself is heavy, whatever the request rate.
 func (b *bench) baseline(ctx context.Context) {
-	var d []time.Duration
+	var light, heavy []time.Duration
 	for range 5 {
 		t := b.now()
 		if _, err := b.api.DeviceHealth(ctx, b.devices); err != nil {
 			b.out.Printf("фон: ошибка чтения состояния: %v", err)
 			return
 		}
-		d = append(d, b.now().Sub(t))
+		light = append(light, b.now().Sub(t))
+		t = b.now()
+		if _, err := b.api.Events(ctx, t.Add(-5*time.Minute), t.Add(time.Hour), 1, 100); err != nil {
+			b.out.Printf("фон: ошибка чтения событий: %v", err)
+			return
+		}
+		heavy = append(heavy, b.now().Sub(t))
 		if b.sleep(ctx, b.poll) != nil {
 			return
 		}
 	}
-	b.out.Printf("фон: чтение состояния контроллера %s", stats(d))
+	b.out.Printf("фон: состояние контроллера (лёгкий запрос) %s", stats(light))
+	b.out.Printf("фон: события за 5 минут (опрос службы) %s", stats(heavy))
+	if l, h := max(percentile(light, 50), time.Millisecond), percentile(heavy, 50); h > 5*l {
+		b.out.Printf("фон: опрос событий в %.0f раз медленнее лёгкого запроса — запрос событий тяжёлый для PERCo", float64(h)/float64(l))
+	}
 }
 
 // detectFormat finds which "ids" encoding PERCo applies to every employee of the batch.
