@@ -32,24 +32,42 @@ function person(id, fio) {
   const s = staffById.get(id);
   return s || {id, fio: fio || "Неизвестный", dep: "", pos: "", tab: "", photo: false, meals: []};
 }
+// Code 1 "Идентификатор не зарегистрирован": the controller does not know the card. Without an employee it is a
+// new card nobody registered in PERCo; with one, PERCo knows the card but the controller lost it — re-registering
+// the card sends it again.
+const UNREGISTERED = 1;
+const unknownCard = e => e.kind === "deny" && e.code === UNREGISTERED && !e.user_id;
+const lostCard = e => e.kind === "deny" && e.code === UNREGISTERED && !!e.user_id;
+// The person behind a swipe; an unregistered card has none, so it is told apart by its number.
+function who(e) {
+  if (e.user_id) return person(e.user_id, e.fio);
+  return {id: 0, fio: "Неизвестная карта", dep: "", pos: "", tab: "", card: e.card, photo: false, meals: []};
+}
+const keyOf = e => e.user_id ? "u" + e.user_id : "c" + (e.card || e.id);
+const same = (list, e) => list.filter(x => keyOf(x) === keyOf(e));
 function avatar(p) {
   if (p.photo) return `<div class="avatar"><img src="/api/photo/${p.id}" alt=""></div>`;
+  if (!p.id) return '<div class="avatar unknown">?</div>';
   const ini = p.fio.split(" ").slice(0, 2).map(s => s[0] || "").join("");
   return `<div class="avatar" style="background:${COLORS[p.id % COLORS.length]}">${esc(ini)}</div>`;
 }
-const role = p => [p.pos, p.dep].filter(Boolean).join(", ") + (p.tab ? ` · таб. ${esc(p.tab)}` : "");
+const role = p => [p.pos, p.dep].filter(Boolean).join(", ") + (p.tab ? ` · таб. ${esc(p.tab)}` : "") + (p.card ? `карта № ${esc(p.card)}` : "");
 const tplText = p => p.meals.length ? p.meals.map(k => `<span class="${mealCls(k)}">${esc(mealName(k))}</span>`).join(", ") : "—";
 
 const passes = () => D.events.filter(e => e.kind === "pass");
 const swipes = () => D.events.filter(e => e.kind === "pass" || e.kind === "deny");
 const ofUser = (list, uid) => list.filter(e => e.user_id === uid);
 function chips(list) {
-  return list.map(e => `<span class="chip ${e.kind === "deny" ? "deny" : mealCls(e.meal)}" title="${e.kind === "deny" ? "Отказ контроллера" : esc(mealName(e.meal))}">${hm(e.ts)}</span>`).join("");
+  return list.map(e => {
+    const cls = lostCard(e) ? "deny lost" : e.kind === "deny" ? "deny" : mealCls(e.meal);
+    const title = e.code === UNREGISTERED && e.kind === "deny" ? "Карта не прошла: " + e.name : e.kind === "deny" ? "Отказ контроллера" : mealName(e.meal);
+    return `<span class="chip ${cls}" title="${esc(title)}">${hm(e.ts)}</span>`;
+  }).join("");
 }
 function grouped() {
   const m = new Map();
-  swipes().forEach(e => { if (!m.has(e.user_id)) m.set(e.user_id, []); m.get(e.user_id).push(e); });
-  return [...m.entries()].map(([uid, list]) => ({p: person(uid, list[0].fio), list}))
+  swipes().forEach(e => { const k = keyOf(e); if (!m.has(k)) m.set(k, []); m.get(k).push(e); });
+  return [...m.values()].map(list => ({p: who(list[0]), list}))
     .sort((a, b) => b.list.at(-1).ts.localeCompare(a.list.at(-1).ts));
 }
 
@@ -67,6 +85,11 @@ function denyReason(e) {
 
 // Verdict for the latest swipe of a person.
 function verdict(e) {
+  if (e.kind === "deny" && e.code === UNREGISTERED) {
+    const n = same(swipes(), e).filter(x => x.kind === "deny" && x.code === UNREGISTERED).length, label = `${plural(n, "попытка", "попытки", "попыток")} сегодня`;
+    if (!e.user_id) return {cls: "warn", text: "Карта не зарегистрирована — оформите нового сотрудника в PERCo", n, label};
+    return {cls: "lost", text: "Карта не прописана в контроллере — перерегистрируйте карту в PERCo", n, label};
+  }
   const inMeal = ofUser(passes(), e.user_id).filter(x => x.meal && x.meal === e.meal).length;
   if (e.kind === "deny") return {cls: "warn", text: `Отказ — ${denyReason(e)}`, n: inMeal, label: e.meal ? `${passWord(inMeal)} ${toMeal(e.meal)}` : `${passWord(ofUser(passes(), e.user_id).length)} сегодня`};
   if (!e.meal) return {cls: "idle", text: "Проход вне окна питания", n: ofUser(passes(), e.user_id).length, label: `${passWord(ofUser(passes(), e.user_id).length)} сегодня`};
@@ -78,17 +101,17 @@ function rA(flash) {
   const c = $("aCard"), last = swipes().at(-1);
   if (!last) c.innerHTML = '<div class="state idle">Ожидание прохода по карте</div>';
   else {
-    const p = person(last.user_id, last.fio), v = verdict(last);
+    const p = who(last), v = verdict(last);
     c.innerHTML = `<div class="state ${v.cls}">${esc(v.text)}</div>
       <div class="person">${avatar(p)}<div><p class="pname">${esc(p.fio)}</p><p class="prole">${role(p)}</p>
       <p class="prole">Шаблон: ${tplText(p)}</p></div></div>
-      <div class="big"><div class="mono ${v.cls === "warn" ? "warn" : ""}">${v.n}</div><span>${esc(v.label)}</span></div>${chips(ofUser(swipes(), last.user_id))}`;
+      <div class="big"><div class="mono ${v.cls === "warn" || v.cls === "lost" ? v.cls : ""}">${v.n}</div><span>${esc(v.label)}</span></div>${chips(same(swipes(), last))}`;
     if (flash) { c.classList.remove("flash"); void c.offsetWidth; c.classList.add("flash"); }
   }
   const q = $("aSearch").value.trim().toLowerCase();
-  $("aRows").innerHTML = grouped().filter(r => !q || r.p.fio.toLowerCase().includes(q)).map(r => {
+  $("aRows").innerHTML = grouped().filter(r => !q || r.p.fio.toLowerCase().includes(q) || (r.p.card || "").includes(q)).map(r => {
     const n = r.list.filter(e => e.kind === "pass").length, rep = r.list.some(e => e.repeat);
-    return `<tr class="${rep ? "rep" : ""}"><td><b>${esc(r.p.fio)}</b><br><small style="color:var(--muted)">${role(r.p)}</small></td>
+    return `<tr class="${r.list.some(lostCard) ? "lost" : rep ? "rep" : ""}"><td><b>${esc(r.p.fio)}</b><br><small style="color:var(--muted)">${role(r.p)}</small></td>
       <td>${tplText(r.p)}</td><td>${chips(r.list)}</td><td class="num ${rep ? "warn" : ""}">${n}</td></tr>`;
   }).join("") || `<tr><td colspan="4" style="color:var(--muted)">${q ? "Никого не найдено." : "С 00:00 проходов ещё не было."}</td></tr>`;
 }
@@ -101,14 +124,16 @@ function rB() {
     k.innerHTML = `<div class="idle">${cur}Приложите карту к считывателю</div>`;
     return;
   }
-  const p = person(last.user_id, last.fio), v = verdict(last);
+  const p = who(last), v = verdict(last);
   k.className = "kiosk " + (v.cls === "idle" ? "" : v.cls);
   k.innerHTML = `<div><div class="verdict">${esc(v.text)}</div>${avatar(p)}
     <p class="kname">${esc(p.fio)}</p><p class="krole">${role(p) || "&nbsp;"}</p>
-    <div class="kn">${v.n}</div><div class="klbl">${esc(v.label)}</div><div>${chips(ofUser(swipes(), last.user_id))}</div></div>`;
+    <div class="kn">${v.n}</div><div class="klbl">${esc(v.label)}</div><div>${chips(same(swipes(), last))}</div></div>`;
 }
 
 function badge(e) {
+  if (unknownCard(e)) return `<span class="badge warn" title="${esc(e.name)}">Карта не зарегистрирована</span>`;
+  if (lostCard(e)) return `<span class="badge lost" title="${esc(e.name)}">Перерегистрировать карту</span>`;
   if (e.kind === "deny") return `<span class="badge warn" title="${esc(e.name)}">Отказ: ${esc(denyReason(e))}</span>`;
   if (!e.meal) return '<span class="badge">Вне окна</span>';
   return e.repeat ? `<span class="badge warn">${e.seq}-й раз</span>` : '<span class="badge ok">1-й раз</span>';
@@ -117,27 +142,30 @@ function badge(e) {
 function rC(newIds) {
   const evs = D.events.filter(e => e.kind !== "door").reverse().slice(0, 60); // "door not closed" is noise here: no door
   $("feed").innerHTML = evs.map(e => {
-    const p = person(e.user_id, e.fio);
-    return `<div class="ev ${newIds.has(e.id) ? "new" : ""}"><div class="tm">${hms(e.ts)}</div>${avatar(p)}
-      <div><div class="who">${esc(p.fio)}</div><div class="dep">${esc(p.dep)}${p.dep ? " · " : ""}<span class="${mealCls(e.meal)}">${esc(mealName(e.meal))}</span></div></div>
+    const p = who(e), cls = unknownCard(e) ? "unknown" : lostCard(e) ? "lost" : "";
+    const where = p.card ? `карта № ${esc(p.card)}` : `${esc(p.dep)}${p.dep ? " · " : ""}<span class="${mealCls(e.meal)}">${esc(mealName(e.meal))}</span>`;
+    return `<div class="ev ${cls} ${newIds.has(e.id) ? "new" : ""}"><div class="tm">${hms(e.ts)}</div>${avatar(p)}
+      <div><div class="who">${esc(p.fio)}</div><div class="dep">${where}</div></div>
       ${badge(e)}</div>`;
   }).join("") || '<div class="empty">С 00:00 проходов ещё не было.</div>';
 
-  const g = grouped(), reps = g.filter(r => r.list.some(e => e.repeat));
-  const denied = D.events.filter(e => e.kind === "deny").length;
+  const g = grouped(), reps = g.filter(r => r.list.some(e => e.repeat && e.code !== UNREGISTERED)); // card trouble is counted apart
+  const denied = D.events.filter(e => e.kind === "deny" && e.code !== UNREGISTERED).length;
+  const cards = g.filter(r => r.list.some(e => unknownCard(e) || lostCard(e))).length;
   $("cStats").innerHTML = `<div class="kv"><span>Проходов</span><b>${passes().length}</b></div>
     <div class="kv"><span>Сотрудников</span><b>${new Set(passes().map(e => e.user_id)).size}</b></div>
     <div class="kv"><span>С повторами</span><b style="color:var(--warn)">${reps.length}</b></div>
-    <div class="kv"><span>Отказов контроллера</span><b style="color:var(--warn)">${denied}</b></div>`;
-  $("cRep").innerHTML = reps.map(r => `<div><span>${esc(r.p.fio)}</span><span>${r.list.filter(e => e.repeat).length}</span></div>`).join("")
+    <div class="kv"><span>Отказов контроллера</span><b style="color:var(--warn)">${denied}</b></div>
+    <div class="kv" title="Неизвестные карты и карты, которых нет в контроллере"><span>Карта не прошла</span><b style="color:var(--lost)">${cards}</b></div>`;
+  $("cRep").innerHTML = reps.map(r => `<div><span>${esc(r.p.fio)}</span><span>${r.list.filter(e => e.repeat && e.code !== UNREGISTERED).length}</span></div>`).join("")
     || '<div style="color:var(--muted)">Повторов нет</div>';
 }
 
 function rD(newUsers) {
   $("board").innerHTML = D.meals.map(m => {
     const by = new Map();
-    swipes().filter(e => e.meal === m.key).forEach(e => { if (!by.has(e.user_id)) by.set(e.user_id, []); by.get(e.user_id).push(e); });
-    const rows = [...by.entries()].sort((a, b) => b[1].at(-1).ts.localeCompare(a[1].at(-1).ts));
+    swipes().filter(e => e.meal === m.key).forEach(e => { const k = keyOf(e); if (!by.has(k)) by.set(k, []); by.get(k).push(e); });
+    const rows = [...by.values()].map(l => [l[0].user_id, l]).sort((a, b) => b[1].at(-1).ts.localeCompare(a[1].at(-1).ts));
     const expected = D.staff.filter(s => s.meals.includes(m.key)).length;
     const came = rows.filter(([, l]) => l.some(e => e.kind === "pass")).length;
     return `<div class="col"><div class="col-head ${mealCls(m.key)}"><div><h3>${esc(m.name)}</h3><small>${m.begin}–${m.end}</small></div>
@@ -145,7 +173,7 @@ function rD(newUsers) {
       <div class="col-body">${rows.map(([uid, l]) => {
         const rep = l.some(e => e.repeat), n = l.filter(e => e.kind === "pass").length, d = l.length - n;
         const note = [n > 1 ? `${n} ${plural(n, "раз", "раза", "раз")}` : "", d ? `отказ ×${d}` : ""].filter(Boolean).join(", ");
-        return `<div class="row ${rep ? "rep" : ""} ${newUsers.has(uid) ? "flash" : ""}"><span class="rn">${esc(person(uid, l[0].fio).fio)}</span>
+        return `<div class="row ${rep ? "rep" : ""} ${newUsers.has(uid) ? "flash" : ""}"><span class="rn">${esc(who(l[0]).fio)}</span>
           <span class="rt">${note ? note + " · " : ""}${l.map(e => hm(e.ts)).join(", ")}</span></div>`;
       }).join("") || '<div class="empty">Пока никто не прошёл</div>'}</div></div>`;
   }).join("");

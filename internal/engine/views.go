@@ -158,8 +158,8 @@ func (e *Engine) Report(fromDay, toDay string) ([]ReportRow, []MealOut, error) {
 	}
 	rows := map[string]*ReportRow{}
 	for _, o := range Annotate(evs) {
-		if o.Kind != store.KindPass && o.Kind != store.KindDeny {
-			continue
+		if o.Kind != store.KindPass && o.Kind != store.KindDeny || o.UserID == 0 {
+			continue // an unregistered card has no person to report on
 		}
 		k := fmt.Sprintf("%s|%d", o.Day, o.UserID)
 		r := rows[k]

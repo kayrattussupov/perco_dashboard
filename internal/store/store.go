@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 // migrations add columns to databases created by earlier versions; "duplicate column" errors are expected.
 var migrations = []string{
 	`ALTER TABLE events ADD COLUMN actor TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE events ADD COLUMN card TEXT NOT NULL DEFAULT ''`,
 }
 
 type Store struct {
@@ -94,18 +95,23 @@ type Event struct {
 	FIO      string `json:"fio"`
 	DeviceID int    `json:"device_id"`
 	Meal     string `json:"meal"`
-	Actor    string `json:"-"` // PERCo operator login for operator actions
+	Actor    string `json:"-"`    // PERCo operator login for operator actions
+	Card     string `json:"card"` // card number presented at the reader
 }
 
 // InsertEvent stores e unless already present; reports whether it was new.
+// Rows stored before card numbers were kept get the number when the event is read again.
 func (s *Store) InsertEvent(e Event) (bool, error) {
-	r, err := s.db.Exec(`INSERT OR IGNORE INTO events(id,ts,day,kind,code,name,user_id,fio,device_id,meal,actor)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`, e.ID, e.TS, e.Day, e.Kind, e.Code, e.Name, e.UserID, e.FIO, e.DeviceID, e.Meal, e.Actor)
+	r, err := s.db.Exec(`INSERT OR IGNORE INTO events(id,ts,day,kind,code,name,user_id,fio,device_id,meal,actor,card)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, e.ID, e.TS, e.Day, e.Kind, e.Code, e.Name, e.UserID, e.FIO, e.DeviceID, e.Meal, e.Actor, e.Card)
 	if err != nil {
 		return false, err
 	}
 	n, _ := r.RowsAffected()
-	return n > 0, nil
+	if n == 0 && e.Card != "" {
+		_, err = s.db.Exec(`UPDATE events SET card=? WHERE id=? AND card=''`, e.Card, e.ID)
+	}
+	return n > 0, err
 }
 
 // MarkDeny reclassifies stored device events whose codes became known as refusals.
@@ -119,7 +125,7 @@ func (s *Store) MarkDeny(codes []int) error {
 
 // Events returns events for days in [fromDay, toDay], ordered by time.
 func (s *Store) Events(fromDay, toDay string) ([]Event, error) {
-	rows, err := s.db.Query(`SELECT id,ts,day,kind,code,name,user_id,fio,device_id,meal
+	rows, err := s.db.Query(`SELECT id,ts,day,kind,code,name,user_id,fio,device_id,meal,card
 		FROM events WHERE day BETWEEN ? AND ? ORDER BY ts, id`, fromDay, toDay)
 	if err != nil {
 		return nil, err
@@ -128,7 +134,7 @@ func (s *Store) Events(fromDay, toDay string) ([]Event, error) {
 	var out []Event
 	for rows.Next() {
 		var e Event
-		if err := rows.Scan(&e.ID, &e.TS, &e.Day, &e.Kind, &e.Code, &e.Name, &e.UserID, &e.FIO, &e.DeviceID, &e.Meal); err != nil {
+		if err := rows.Scan(&e.ID, &e.TS, &e.Day, &e.Kind, &e.Code, &e.Name, &e.UserID, &e.FIO, &e.DeviceID, &e.Meal, &e.Card); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

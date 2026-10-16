@@ -193,7 +193,7 @@ func (b *Blocker) unknownCards(now time.Time) []string {
 			continue
 		}
 		switch {
-		case e.Kind == store.KindOther && e.Code == 1:
+		case e.Kind == store.KindDeny && e.Code == evUnregistered:
 			if _, seen := lastReject[e.UserID]; !seen {
 				order = append(order, e.UserID)
 			}
