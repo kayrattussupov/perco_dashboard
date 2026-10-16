@@ -22,4 +22,4 @@ try {
     Write-Warning 'ROLLED BACK: the old version is running. Send the end of perco-meal.log.'
 }
 Get-Service PercoMeal | Format-Table Name, Status -AutoSize
-Get-Content .\perco-meal.log -Tail 10
+Get-Content .\perco-meal.log -Tail 10 -Encoding UTF8
