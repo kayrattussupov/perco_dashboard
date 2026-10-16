@@ -94,6 +94,7 @@ func (e *Engine) Run(ctx context.Context) {
 	go e.every(bg, 10*time.Minute, "окна питания", e.loadMeals)
 	go e.every(ctx, 15*time.Second, "блокировки", e.blocker.Tick)    // first run at start: recover after downtime
 	go e.every(ctx, healthEvery, "контроллер", e.blocker.HealthLoop) // shown in the header; also feeds the write gate
+	go e.every(ctx, backupEvery, "резервная копия", e.backupLoop)
 	go e.every(bg, blockedEvery, "заблокированные", e.blocker.BlockedLoop)
 	go e.every(bg, 30*time.Second, "проверки", e.blocker.SelfCheckTick) // a check missed while the PC was off runs at start
 	if e.cfg.BackupReset {

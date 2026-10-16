@@ -4,6 +4,7 @@
 const KIOSK_IDLE_MS = 20000;
 let D = null;            // last /api/today payload
 let BL = null;           // last /api/blocking payload
+let SH = null;           // last /api/health payload: the service's own state
 let staffById = new Map();
 let lastSeenId = 0;      // newest event id already rendered
 let view = "a";
@@ -176,6 +177,7 @@ async function load() {
     BL = rb.ok ? await rb.json() : null;
     D = await r.json();
     if (BL) D.alerts = D.alerts.concat(BL.warnings);
+    if (SH) D.alerts = D.alerts.concat(SH.warnings);
     staffById = new Map(D.staff.map(s => [s.id, s]));
     const newIds = new Set(lastSeenId ? D.events.filter(e => e.id > lastSeenId).map(e => e.id) : []);
     if ([...newIds].some(id => { const e = D.events.find(x => x.id === id); return e.kind === "pass" || e.kind === "deny"; })) lastSwipeAt = Date.now();
@@ -298,4 +300,32 @@ function tick() {
 setInterval(tick, 1000); tick();
 setInterval(load, 60000); // window changes and day rollover even without events
 new EventSource("/api/stream").onmessage = () => load();
+
+// ---- Service health: data freshness, load on PERCo, local disk and backup ----
+async function loadHealth() {
+  try {
+    const r = await fetch("/api/health", {cache: "no-store"});
+    SH = r.ok ? await r.json() : null;
+  } catch { SH = null; }
+  renderHealth();
+}
+function renderHealth() {
+  const p = $("svcPanel");
+  if (!SH) { p.innerHTML = "<h3><span>Состояние службы</span></h3><small>Нет данных от службы</small>"; return; }
+  const pc = SH.perco, age = SH.data_age_s;
+  const fresh = age < 0 ? "ещё не загружались" : age < 60 ? `${Math.round(age)} с назад` : `${Math.round(age / 60)} мин назад`;
+  const slow = (pc.kinds || []).filter(k => k.p95_s > 0).sort((a, b) => b.p95_s - a.p95_s).slice(0, 3)
+    .map(k => `${esc(k.kind)} — p95 ${k.p95_s.toFixed(2)} с, p99 ${k.p99_s.toFixed(2)} с`).join("<br>");
+  p.innerHTML = `<h3><span>Состояние службы</span></h3>
+    <div class="row"><span>Проходы обновлены</span><b>${fresh}</b></div>
+    ${SH.poll_error && !pc.breaker_open ? `<div class="err">${esc(SH.poll_error)}</div>` : ""}
+    <div class="row"><span>Запросов к PERCo</span><b>${pc.last_minute} за мин · ${pc.last_hour} за час</b></div>
+    <div class="row"><span>Ошибок PERCo за час</span><b>${pc.errors_hour}</b></div>
+    ${pc.breaker_open ? `<div class="err">Запросы к PERCo приостановлены до ${esc(pc.open_until)}</div>` : ""}
+    ${slow ? `<div style="margin-top:6px"><small>Самые медленные запросы за час:<br>${slow}</small></div>` : ""}
+    <div class="row"><span>Свободно на диске</span><b>${SH.disk_free_gb < 0 ? "—" : SH.disk_free_gb.toFixed(1) + " ГБ"}</b></div>
+    <div class="row"><span>Резервная копия</span><b>${SH.backup_at ? esc(SH.backup_at.slice(0, 16)) : "ещё нет"}</b></div>`;
+}
+loadHealth();
+setInterval(loadHealth, 10000);
 load();
