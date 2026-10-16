@@ -21,9 +21,14 @@ import (
 
 const (
 	pageRows       = 500
-	overlap        = 10 * time.Minute // re-read window to catch late controller events
-	fullResyncEach = 10 * time.Minute
-	staffWorkers   = 4
+	quickOverlap   = 30 * time.Second // every poll re-reads only this much behind the last event
+	deepOverlap    = 10 * time.Minute // re-read window to catch late controller events
+	deepEach       = 2 * time.Minute
+	fullResyncEach = 30 * time.Minute
+	staffWorkers   = 2
+	staffPause     = 100 * time.Millisecond // spacing between employee requests so PERCo is not flooded
+	pagePause      = 300 * time.Millisecond // spacing between event pages of a big read
+	maxBackoff     = 30 * time.Second       // longest wait between polls while PERCo fails
 )
 
 type Engine struct {
@@ -33,10 +38,11 @@ type Engine struct {
 	log *log.Logger
 	loc *time.Location
 
-	mu      sync.RWMutex
-	meals   []meals.Meal
-	lastOK  time.Time
-	lastErr string
+	mu         sync.RWMutex
+	meals      []meals.Meal
+	lastOK     time.Time
+	lastErr    string
+	lastErrLog time.Time // the error text changes with every request URL: log it at most once a minute
 
 	subsMu sync.Mutex
 	subs   map[chan struct{}]struct{}
@@ -56,6 +62,7 @@ func New(cfg *config.Config, pc *perco.Client, st *store.Store, lg *log.Logger) 
 			e.meals = ms
 		}
 	}
+	e.blocker.startWriteJournal()
 	if err := st.MarkDeny(append(slices.Clone(builtinDenyIDs), cfg.DenyEventIDs...)); err != nil {
 		lg.Printf("переклассификация отказов: %v", err)
 	}
@@ -83,33 +90,63 @@ func (e *Engine) Meals() []meals.Meal {
 
 // Run blocks until ctx is cancelled.
 func (e *Engine) Run(ctx context.Context) {
-	go e.every(ctx, time.Duration(e.cfg.StaffRefreshMinutes)*time.Minute, "сотрудники", e.syncStaff)
-	go e.every(ctx, 10*time.Minute, "окна питания", e.loadMeals)
-	go e.every(ctx, 15*time.Second, "блокировки", e.blocker.Tick) // first run at start: recover after downtime
-	go e.every(ctx, 30*time.Second, "проверки", e.blocker.SelfCheckTick) // a check missed while the PC was off runs at start
+	bg := perco.Background(ctx) // reads that may wait: the smaller request budget, never ahead of passes
+	go e.every(bg, time.Duration(e.cfg.StaffRefreshMinutes)*time.Minute, "сотрудники", e.syncStaff)
+	go e.every(bg, 10*time.Minute, "окна питания", e.loadMeals)
+	go e.every(ctx, 15*time.Second, "блокировки", e.blocker.Tick)    // first run at start: recover after downtime
+	go e.every(ctx, healthEvery, "контроллер", e.blocker.HealthLoop) // shown in the header; also feeds the write gate
+	go e.every(ctx, backupEvery, "резервная копия", e.backupLoop)
+	go e.every(bg, blockedEvery, "заблокированные", e.blocker.BlockedLoop)
+	go e.every(bg, 30*time.Second, "проверки", e.blocker.SelfCheckTick) // a check missed while the PC was off runs at start
 	if e.cfg.BackupReset {
 		go e.every(ctx, 20*time.Second, "резервный сброс", e.backupReset)
 	}
 
 	tick := time.NewTicker(time.Duration(e.cfg.PollSeconds) * time.Second)
 	defer tick.Stop()
-	var lastFull time.Time
+	var lastFull, lastDeep time.Time
+	var failures int
 	for {
 		full := time.Since(lastFull) > fullResyncEach
-		if err := e.poll(ctx, full); err != nil {
+		deep := full || time.Since(lastDeep) > deepEach
+		if err := e.poll(ctx, full, deep); err != nil {
 			e.setErr(err)
+			failures++
 		} else {
 			e.setOK()
+			failures = 0
+			now := time.Now()
 			if full {
-				lastFull = time.Now()
+				lastFull = now
+			}
+			if deep {
+				lastDeep = now
 			}
 		}
+		// While PERCo is failing or hanging, back off instead of piling more requests onto it.
+		wait := backoff(time.Duration(e.cfg.PollSeconds)*time.Second, failures)
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			if wait > time.Duration(e.cfg.PollSeconds)*time.Second {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(wait):
+				}
+			}
 		}
 	}
+}
+
+// backoff doubles the base interval per consecutive failure, up to maxBackoff.
+func backoff(base time.Duration, failures int) time.Duration {
+	d := base
+	for i := 0; i < failures && d < maxBackoff; i++ {
+		d *= 2
+	}
+	return min(d, max(maxBackoff, base))
 }
 
 func (e *Engine) every(ctx context.Context, d time.Duration, what string, fn func(context.Context) error) {
@@ -143,14 +180,17 @@ func (e *Engine) setOK() {
 
 func (e *Engine) setErr(err error) {
 	e.mu.Lock()
-	if e.lastErr != err.Error() {
+	if e.lastErr == "" || time.Since(e.lastErrLog) >= time.Minute {
 		e.log.Printf("опрос событий: %v", err)
+		e.lastErrLog = time.Now()
 	}
 	e.lastErr = err.Error()
 	e.mu.Unlock()
 }
 
-func (e *Engine) poll(ctx context.Context, full bool) error {
+// poll reads new events. Normally it asks only for the last seconds; every few minutes (deep) it re-reads
+// 10 minutes to catch late controller events, and every half hour (full) the whole day.
+func (e *Engine) poll(ctx context.Context, full, deep bool) error {
 	now := e.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, e.loc)
 	var from time.Time
@@ -164,7 +204,11 @@ func (e *Engine) poll(ctx context.Context, full bool) error {
 		if err != nil {
 			t = midnight
 		}
-		from = t.Add(-overlap)
+		if deep {
+			from = t.Add(-deepOverlap)
+		} else {
+			from = t.Add(-quickOverlap)
+		}
 	}
 	to := now.Add(time.Hour)
 
@@ -187,6 +231,11 @@ func (e *Engine) poll(ctx context.Context, full bool) error {
 		}
 		if len(rows) < pageRows {
 			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pagePause):
 		}
 	}
 	if maxTS != "" {
@@ -273,10 +322,13 @@ func (e *Engine) handle(ctx context.Context, ev perco.Event) (bool, error) {
 		return isNew, err
 	}
 	if se.UserID != 0 && !e.st.StaffKnown(se.UserID) {
-		go e.fetchStaff(ctx, se.UserID, se.FIO)
+		go e.fetchStaff(perco.Background(ctx), se.UserID, se.FIO)
 	}
 	if kind == store.KindPass {
 		e.blocker.OnPass(ctx, se, t)
+	}
+	if kind == store.KindStaffOp {
+		e.blocker.NoteSelfAction(se)
 	}
 	return true, nil
 }

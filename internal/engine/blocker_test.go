@@ -25,13 +25,37 @@ type fakePERCo struct {
 	pending      int      // commands PERCo has not delivered yet
 	devErrors    []string // resources not transferred
 	ignoreUnlock bool     // PERCo says "ok" to an unblock but the flag stays set
+	healthCalls  int      // DeviceHealth and DeviceState requests made
+	fullCalls    int      // DeviceHealth requests (with per-device error lists)
+}
+
+func (f *fakePERCo) BlockedStaff(_ context.Context) ([]perco.BlockedPerson, error) {
+	if f.fail != nil {
+		return nil, f.fail
+	}
+	var out []perco.BlockedPerson
+	for id, v := range f.blocked {
+		if v {
+			out = append(out, perco.BlockedPerson{ID: id})
+		}
+	}
+	return out, nil
 }
 
 func (f *fakePERCo) DeviceHealth(_ context.Context, _ []int) (perco.DeviceHealth, error) {
+	f.healthCalls++
+	f.fullCalls++
 	if f.fail != nil {
 		return perco.DeviceHealth{}, f.fail
 	}
 	return perco.DeviceHealth{Connected: !f.offline, Pending: f.pending, Errors: f.devErrors}, nil
+}
+
+func (f *fakePERCo) DeviceState(ctx context.Context) (perco.DeviceHealth, error) {
+	f.fullCalls--
+	h, err := f.DeviceHealth(ctx, nil)
+	h.Errors = nil
+	return h, err
 }
 
 func (f *fakePERCo) StaffBlockState(_ context.Context, id int64) (bool, bool, error) {
@@ -90,7 +114,7 @@ func newRig(t *testing.T, mode string) *rig {
 		now: time.Date(2026, 10, 12, 7, 31, 0, 0, tz), ok: true, next: 1}
 	r.b = &Blocker{cfg: cfg, api: r.api, st: st, log: log.New(io.Discard, "", 0), loc: tz,
 		now: func() time.Time { return r.now }, meals: func() []meals.Meal { return live },
-		healthy: func() bool { return r.ok }, notify: func() {}, self: "meal-service"}
+		healthy: func() bool { return r.ok }, notify: func() {}, self: "meal-service", linkStable: new(time.Duration)}
 	st.SetKV(modeKey, mode)
 	return r
 }
@@ -253,8 +277,10 @@ func TestOperatorBlocksOnTop(t *testing.T) {
 	if !r.api.blocked[900] || r.state(t, 900).State != store.BlockHeld {
 		t.Fatal("operator block must survive window end and release-all")
 	}
-	// The operator lifts it in PERCo → row closes, nothing sent.
+	// The operator lifts it in PERCo → row closes, nothing sent. Without the event in the log
+	// PERCo is re-read only every heldRecheck.
 	r.api.blocked[900] = false
+	r.now = r.now.Add(heldRecheck)
 	r.tick(t)
 	if r.state(t, 900).State != store.BlockClosed {
 		t.Fatal("held row must close once the operator unblocks")
@@ -410,5 +436,31 @@ func TestPIN(t *testing.T) {
 	r.b.cfg.Blocking.AdminPIN = ""
 	if r.b.CheckPIN("") {
 		t.Fatal("empty configured PIN must disable admin actions")
+	}
+}
+
+func TestHeldClosesFromEventLogWithoutPERCoRead(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.pass(900)
+	r.now = r.now.Add(5 * time.Minute)
+	r.operator(evStaffBlocked, 900, "admin")
+	r.tick(t)
+	r.now = r.now.Add(time.Minute)
+	r.api.blocked[900] = false
+	r.operator(evStaffUnblocked, 900, "admin")
+	r.tick(t) // within heldRecheck: the log alone must close the row
+	if s := r.state(t, 900); s.State != store.BlockClosed {
+		t.Fatalf("state %s, want closed from the operator's unblock event", s.State)
+	}
+}
+
+func TestBackoff(t *testing.T) {
+	for _, c := range []struct {
+		failures int
+		want     time.Duration
+	}{{0, 2 * time.Second}, {1, 4 * time.Second}, {3, 16 * time.Second}, {10, maxBackoff}} {
+		if got := backoff(2*time.Second, c.failures); got != c.want {
+			t.Errorf("backoff(2s, %d) = %v, want %v", c.failures, got, c.want)
+		}
 	}
 }

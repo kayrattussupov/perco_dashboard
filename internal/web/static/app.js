@@ -4,6 +4,7 @@
 const KIOSK_IDLE_MS = 20000;
 let D = null;            // last /api/today payload
 let BL = null;           // last /api/blocking payload
+let SH = null;           // last /api/health payload: the service's own state
 let staffById = new Map();
 let lastSeenId = 0;      // newest event id already rendered
 let view = "a";
@@ -176,6 +177,7 @@ async function load() {
     BL = rb.ok ? await rb.json() : null;
     D = await r.json();
     if (BL) D.alerts = D.alerts.concat(BL.warnings);
+    if (SH) D.alerts = D.alerts.concat(SH.warnings);
     staffById = new Map(D.staff.map(s => [s.id, s]));
     const newIds = new Set(lastSeenId ? D.events.filter(e => e.id > lastSeenId).map(e => e.id) : []);
     if ([...newIds].some(id => { const e = D.events.find(x => x.id === id); return e.kind === "pass" || e.kind === "deny"; })) lastSwipeAt = Date.now();
@@ -209,7 +211,20 @@ viewFromHash();
 // ---- Blocking of repeat passes: mode switch, active blocks, PIN dialog ----
 const MODE_TEXT = {off: "ВЫКЛ", test: "ТЕСТ", on: "ВКЛ"};
 const STATE_TEXT = {pending: "применяется…", blocked: "заблокирован", operator: "заблокирован оператором"};
+// PERCo ↔ controller link: shown in the header so an outage is visible at once, with details in the tooltip.
+const LINK_TEXT = {ok: "PERCo: на связи", syncing: "PERCo: передача…", settling: "PERCo: связь восстановлена…", offline: "Контроллер: нет связи",
+  unreachable: "PERCo: нет связи", unknown: "PERCo: нет данных"};
+function renderLink() {
+  const pill = $("prcPill"), c = BL && BL.controller;
+  if (!c) { pill.className = "pill static"; pill.textContent = "PERCo: ?"; pill.title = "Нет данных от службы"; return; }
+  pill.className = "pill static st-" + c.state;
+  pill.textContent = LINK_TEXT[c.state] || "PERCo: ?";
+  pill.title = `${c.text}
+С ${c.since.slice(11, 16)} · проверено ${c.checked_at.slice(11, 19)}`;
+}
+
 function renderBlocking() {
+  renderLink();
   const pill = $("blkPill"), panel = $("blkPanel");
   if (!BL) { pill.textContent = "Блокировка: ?"; panel.innerHTML = ""; return; }
   pill.className = "pill " + BL.effective + (BL.force_off ? " forced" : "");
@@ -220,7 +235,14 @@ function renderBlocking() {
       ${b.last_error ? `<div class="err">Не снимается: ${esc(b.last_error)} (попыток: ${b.attempts})</div>` : ""}</span>
       <button class="mini" data-release="${b.id}">Разблокировать</button></div>`).join("");
   const done = BL.today.filter(b => b.state === "released").length;
-  panel.innerHTML = `<h3><span>Активные блокировки — ${BL.open.length}</span>${BL.open.length ? '<button class="mini" data-release="all">Снять все</button>' : ""}</h3>
+  // Total blocked in PERCo at this moment (whoever blocked them); falls back to the service's own rows.
+  const bn = BL.blocked_now, total = bn && bn.known ? bn.count : "—"; // never show 0 when PERCo has not answered
+  const sub = bn && bn.known
+    ? `<div><small>в PERCo на ${esc(bn.checked_at.slice(11, 19))} · службой: ${bn.service} · вручную: ${bn.manual}${bn.error ? " · данные устарели: " + esc(bn.error) : ""}</small></div>
+       ${bn.manual ? `<div class="err">Вручную: ${bn.names.map(esc).join(", ")}</div>` : ""}`
+    : `<div><small>${bn && bn.error ? "Нет данных PERCo: " + esc(bn.error) : "Данные PERCo загружаются…"}</small></div>`;
+  panel.innerHTML = `<h3><span>Заблокировано сейчас — <b class="blk-total ${total > 0 ? "some" : ""}">${total}</b></span><button class="mini" data-release="all" title="Снять все блокировки, поставленные службой (нужен PIN)">Разблокировать всех</button></h3>
+    ${sub}
     ${rows || `<small>${BL.effective === "off" ? "Блокировка выключена — работает старый метод, PERCo не меняется." : "Сейчас никто не заблокирован."}</small>`}
     ${done ? `<div style="margin-top:8px"><small>Сегодня снято по расписанию: ${done}</small></div>` : ""}`;
   panel.querySelectorAll("[data-release]").forEach(btn => btn.onclick = () => openDialog(btn.dataset.release));
@@ -236,7 +258,7 @@ function openDialog(action) {
     $("dlgText").textContent = "ВЫКЛ — старый метод: только дашборд, PERCo не меняется; при выключении все блокировки службы снимаются сразу. ТЕСТ — только сотрудники из test_user_ids. ВКЛ — все.";
   } else if (action === "all") {
     $("dlgTitle").textContent = "Снять все блокировки службы";
-    $("dlgText").textContent = "Будут разблокированы все, кого заблокировала служба. Блокировки, поставленные операторами, не трогаются. Режим не меняется.";
+    $("dlgText").textContent = "Будут разблокированы все, кого заблокировала служба" + (BL && BL.open.length ? ` (${BL.open.length})` : ", сейчас таких нет") + ". Блокировки, поставленные операторами, не трогаются. Режим не меняется. Нужен PIN.";
   } else {
     const b = BL.open.find(x => String(x.id) === action);
     $("dlgTitle").textContent = "Разблокировать";
@@ -278,4 +300,32 @@ function tick() {
 setInterval(tick, 1000); tick();
 setInterval(load, 60000); // window changes and day rollover even without events
 new EventSource("/api/stream").onmessage = () => load();
+
+// ---- Service health: data freshness, load on PERCo, local disk and backup ----
+async function loadHealth() {
+  try {
+    const r = await fetch("/api/health", {cache: "no-store"});
+    SH = r.ok ? await r.json() : null;
+  } catch { SH = null; }
+  renderHealth();
+}
+function renderHealth() {
+  const p = $("svcPanel");
+  if (!SH) { p.innerHTML = "<h3><span>Состояние службы</span></h3><small>Нет данных от службы</small>"; return; }
+  const pc = SH.perco, age = SH.data_age_s;
+  const fresh = age < 0 ? "ещё не загружались" : age < 60 ? `${Math.round(age)} с назад` : `${Math.round(age / 60)} мин назад`;
+  const slow = (pc.kinds || []).filter(k => k.p95_s > 0).sort((a, b) => b.p95_s - a.p95_s).slice(0, 3)
+    .map(k => `${esc(k.kind)} — p95 ${k.p95_s.toFixed(2)} с, p99 ${k.p99_s.toFixed(2)} с`).join("<br>");
+  p.innerHTML = `<h3><span>Состояние службы</span></h3>
+    <div class="row"><span>Проходы обновлены</span><b>${fresh}</b></div>
+    ${SH.poll_error && !pc.breaker_open ? `<div class="err">${esc(SH.poll_error)}</div>` : ""}
+    <div class="row"><span>Запросов к PERCo</span><b>${pc.last_minute} за мин · ${pc.last_hour} за час</b></div>
+    <div class="row"><span>Ошибок PERCo за час</span><b>${pc.errors_hour}</b></div>
+    ${pc.breaker_open ? `<div class="err">Запросы к PERCo приостановлены до ${esc(pc.open_until)}</div>` : ""}
+    ${slow ? `<div style="margin-top:6px"><small>Самые медленные запросы за час:<br>${slow}</small></div>` : ""}
+    <div class="row"><span>Свободно на диске</span><b>${SH.disk_free_gb < 0 ? "—" : SH.disk_free_gb.toFixed(1) + " ГБ"}</b></div>
+    <div class="row"><span>Резервная копия</span><b>${SH.backup_at ? esc(SH.backup_at.slice(0, 16)) : "ещё нет"}</b></div>`;
+}
+loadHealth();
+setInterval(loadHealth, 10000);
 load();

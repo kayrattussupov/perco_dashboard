@@ -4,3 +4,5 @@ perco-meal.exe
 *.db-*
 *.log
 *.log.1
+perco-bench.exe
+bench-*.txt

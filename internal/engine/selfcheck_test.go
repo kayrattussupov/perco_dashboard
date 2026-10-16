@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -177,5 +178,55 @@ func TestSelfCheckReportsStuckOwnBlock(t *testing.T) {
 	rec, ok := r.b.CheckResult("11:35")
 	if !ok || rec.OK || !strings.Contains(strings.Join(rec.Problems, " "), "Не снята блокировка") {
 		t.Fatalf("stuck block must fail the check: %+v ok=%v", rec, ok)
+	}
+}
+
+// The lost-card problem lasts until the person passes successfully, not until the next check.
+func TestUnknownCardClearsAfterSuccessfulPass(t *testing.T) {
+	r := checkRig(t)
+	r.st.UpsertStaff(store.Staff{ID: 779, FIO: "Здоров Здоров", Active: true}, "")
+	r.next++
+	r.st.InsertEvent(store.Event{ID: r.next, TS: "2026-10-12 19:20:00", Day: "2026-10-12", Kind: store.KindOther,
+		Code: 1, UserID: 779, FIO: "Здоров Здоров", Meal: "d"})
+
+	r.now = at(20, 6)
+	if got := strings.Join(r.b.unknownCards(r.now), " "); !strings.Contains(got, "Здоров Здоров") {
+		t.Fatalf("rejected and not passed since: must be reported, got %q", got)
+	}
+	r.now = at(20, 30) // a later check with nobody swiping must not turn it green
+	if got := r.b.unknownCards(r.now); len(got) == 0 {
+		t.Fatal("no swipe since the rejection: the problem must persist")
+	}
+
+	r.next++
+	r.st.InsertEvent(store.Event{ID: r.next, TS: "2026-10-12 20:40:00", Day: "2026-10-12", Kind: store.KindPass,
+		Code: 17, UserID: 779, FIO: "Здоров Здоров", Meal: "d"})
+	r.now = at(20, 45)
+	if got := r.b.unknownCards(r.now); len(got) != 0 {
+		t.Fatalf("passed successfully after the rejection: the card works, got %v", got)
+	}
+}
+
+// A later clean check supersedes an earlier failed one on the dashboard.
+func TestLatestCheckSupersedesEarlierFailure(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.b.cfg.SelfCheck.Enabled = true
+	r.b.cfg.SelfCheck.Times = []string{"06:30", "06:45"}
+	save := func(hm, ran string, ok bool, problems ...string) {
+		rec := CheckRecord{Time: hm, Due: "2026-10-12 " + hm + ":00", RanAt: ran, OK: ok, Problems: problems}
+		raw, _ := json.Marshal(rec)
+		r.st.SetKV(checkKeyPrefix+hm, string(raw))
+	}
+	r.now = at(7, 0)
+	save("06:30", "2026-10-12 06:30:05", false, "что-то не так")
+	save("06:45", "2026-10-12 06:45:05", true)
+	s, _ := r.b.Status()
+	if strings.Contains(strings.Join(s.Warnings, " "), "Проверка") {
+		t.Fatalf("06:45 was clean and later: no check warning expected, got %v", s.Warnings)
+	}
+	save("06:45", "2026-10-12 06:45:05", false, "всё ещё не так")
+	s, _ = r.b.Status()
+	if !strings.Contains(strings.Join(s.Warnings, " "), "всё ещё не так") {
+		t.Fatalf("the latest failed check must warn, got %v", s.Warnings)
 	}
 }
