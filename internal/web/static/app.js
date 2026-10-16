@@ -36,14 +36,37 @@ function person(id, fio) {
 // new card nobody registered in PERCo; with one, PERCo knows the card but the controller lost it — re-registering
 // the card sends it again.
 const UNREGISTERED = 1;
-const unknownCard = e => e.kind === "deny" && e.code === UNREGISTERED && !e.user_id;
-const lostCard = e => e.kind === "deny" && e.code === UNREGISTERED && !!e.user_id;
-// The person behind a swipe; an unregistered card has none, so it is told apart by its number.
+const cardDeny = e => e.kind === "deny" && e.code === UNREGISTERED;
+// The card number stays the same when the card is registered, so the first event of the day that carries both
+// the number and an employee names the owner of that card's earlier "unknown" refusals.
+let owners = new Map(); // card → first event with an employee; rebuilt on every render
+function linkCards() {
+  owners = new Map();
+  for (const e of D.events) if (e.card && e.user_id && !owners.has(e.card)) owners.set(e.card, e);
+}
+const ownerOf = e => !e.user_id && e.card ? owners.get(e.card) : undefined;
+const uidOf = e => e.user_id || ownerOf(e)?.user_id || 0;
+// When a card refusal stopped being a problem: an unknown card got registered, a lost card passed again; "" while open.
+function fixedAt(e) {
+  if (!cardDeny(e)) return "";
+  if (!e.user_id) return e.card && D.events.find(x => x.card === e.card && x.user_id && x.ts > e.ts)?.ts || "";
+  return D.events.find(x => x.kind === "pass" && x.user_id === e.user_id && x.ts > e.ts)?.ts || "";
+}
+const unknownCard = e => cardDeny(e) && !e.user_id && !fixedAt(e);
+const lostCard = e => cardDeny(e) && !!e.user_id && !fixedAt(e);
+const fixedCard = e => cardDeny(e) && !!fixedAt(e);
+// The person behind a swipe; an unregistered card has none until it is registered, so it is told apart by its number.
 function who(e) {
-  if (e.user_id) return person(e.user_id, e.fio);
+  const uid = uidOf(e);
+  if (uid) return person(uid, e.fio || ownerOf(e)?.fio);
   return {id: 0, fio: "Неизвестная карта", dep: "", pos: "", tab: "", card: e.card, photo: false, meals: []};
 }
-const keyOf = e => e.user_id ? "u" + e.user_id : "c" + (e.card || e.id);
+const keyOf = e => uidOf(e) ? "u" + uidOf(e) : "c" + (e.card || e.id);
+// A line for the person's card when their card was registered today after refusals.
+function regNote(list) {
+  const e = list.find(x => fixedCard(x) && !x.user_id);
+  return e ? `Карта зарегистрирована сегодня, опознана в ${hm(fixedAt(e))}` : "";
+}
 const same = (list, e) => list.filter(x => keyOf(x) === keyOf(e));
 function avatar(p) {
   if (p.photo) return `<div class="avatar"><img src="/api/photo/${p.id}" alt=""></div>`;
@@ -57,10 +80,11 @@ const tplText = p => p.meals.length ? p.meals.map(k => `<span class="${mealCls(k
 const passes = () => D.events.filter(e => e.kind === "pass");
 const swipes = () => D.events.filter(e => e.kind === "pass" || e.kind === "deny");
 const ofUser = (list, uid) => list.filter(e => e.user_id === uid);
+const fixedText = e => e.user_id ? "До перерегистрации карты" : "До регистрации карты";
 function chips(list) {
   return list.map(e => {
-    const cls = lostCard(e) ? "deny lost" : e.kind === "deny" ? "deny" : mealCls(e.meal);
-    const title = e.code === UNREGISTERED && e.kind === "deny" ? "Карта не прошла: " + e.name : e.kind === "deny" ? "Отказ контроллера" : mealName(e.meal);
+    const cls = fixedCard(e) ? "deny done" : lostCard(e) ? "deny lost" : e.kind === "deny" ? "deny" : mealCls(e.meal);
+    const title = fixedCard(e) ? fixedText(e) : cardDeny(e) ? "Карта не прошла: " + e.name : e.kind === "deny" ? "Отказ контроллера" : mealName(e.meal);
     return `<span class="chip ${cls}" title="${esc(title)}">${hm(e.ts)}</span>`;
   }).join("");
 }
@@ -104,13 +128,13 @@ function rA(flash) {
     const p = who(last), v = verdict(last);
     c.innerHTML = `<div class="state ${v.cls}">${esc(v.text)}</div>
       <div class="person">${avatar(p)}<div><p class="pname">${esc(p.fio)}</p><p class="prole">${role(p)}</p>
-      <p class="prole">Шаблон: ${tplText(p)}</p></div></div>
+      <p class="prole">Шаблон: ${tplText(p)}</p>${regNote(same(swipes(), last)) ? `<p class="prole">${esc(regNote(same(swipes(), last)))}</p>` : ""}</div></div>
       <div class="big"><div class="mono ${v.cls === "warn" || v.cls === "lost" ? v.cls : ""}">${v.n}</div><span>${esc(v.label)}</span></div>${chips(same(swipes(), last))}`;
     if (flash) { c.classList.remove("flash"); void c.offsetWidth; c.classList.add("flash"); }
   }
   const q = $("aSearch").value.trim().toLowerCase();
   $("aRows").innerHTML = grouped().filter(r => !q || r.p.fio.toLowerCase().includes(q) || (r.p.card || "").includes(q)).map(r => {
-    const n = r.list.filter(e => e.kind === "pass").length, rep = r.list.some(e => e.repeat);
+    const n = r.list.filter(e => e.kind === "pass").length, rep = r.list.some(e => e.repeat && !cardDeny(e));
     return `<tr class="${r.list.some(lostCard) ? "lost" : rep ? "rep" : ""}"><td><b>${esc(r.p.fio)}</b><br><small style="color:var(--muted)">${role(r.p)}</small></td>
       <td>${tplText(r.p)}</td><td>${chips(r.list)}</td><td class="num ${rep ? "warn" : ""}">${n}</td></tr>`;
   }).join("") || `<tr><td colspan="4" style="color:var(--muted)">${q ? "Никого не найдено." : "С 00:00 проходов ещё не было."}</td></tr>`;
@@ -127,11 +151,12 @@ function rB() {
   const p = who(last), v = verdict(last);
   k.className = "kiosk " + (v.cls === "idle" ? "" : v.cls);
   k.innerHTML = `<div><div class="verdict">${esc(v.text)}</div>${avatar(p)}
-    <p class="kname">${esc(p.fio)}</p><p class="krole">${role(p) || "&nbsp;"}</p>
+    <p class="kname">${esc(p.fio)}</p><p class="krole">${role(p) || "&nbsp;"}${regNote(same(swipes(), last)) ? "<br>" + esc(regNote(same(swipes(), last))) : ""}</p>
     <div class="kn">${v.n}</div><div class="klbl">${esc(v.label)}</div><div>${chips(same(swipes(), last))}</div></div>`;
 }
 
 function badge(e) {
+  if (fixedCard(e)) return `<span class="badge" title="${esc(e.name)}">${fixedText(e)}</span>`;
   if (unknownCard(e)) return `<span class="badge warn" title="${esc(e.name)}">Карта не зарегистрирована</span>`;
   if (lostCard(e)) return `<span class="badge lost" title="${esc(e.name)}">Перерегистрировать карту</span>`;
   if (e.kind === "deny") return `<span class="badge warn" title="${esc(e.name)}">Отказ: ${esc(denyReason(e))}</span>`;
@@ -165,13 +190,13 @@ function rD(newUsers) {
   $("board").innerHTML = D.meals.map(m => {
     const by = new Map();
     swipes().filter(e => e.meal === m.key).forEach(e => { const k = keyOf(e); if (!by.has(k)) by.set(k, []); by.get(k).push(e); });
-    const rows = [...by.values()].map(l => [l[0].user_id, l]).sort((a, b) => b[1].at(-1).ts.localeCompare(a[1].at(-1).ts));
+    const rows = [...by.values()].map(l => [uidOf(l[0]), l]).sort((a, b) => b[1].at(-1).ts.localeCompare(a[1].at(-1).ts));
     const expected = D.staff.filter(s => s.meals.includes(m.key)).length;
     const came = rows.filter(([, l]) => l.some(e => e.kind === "pass")).length;
     return `<div class="col"><div class="col-head ${mealCls(m.key)}"><div><h3>${esc(m.name)}</h3><small>${m.begin}–${m.end}</small></div>
       <div class="mono">${came}<small style="font-size:14px;color:var(--muted)"> / ${expected}</small></div></div>
       <div class="col-body">${rows.map(([uid, l]) => {
-        const rep = l.some(e => e.repeat), n = l.filter(e => e.kind === "pass").length, d = l.length - n;
+        const rep = l.some(e => e.repeat && !cardDeny(e)), n = l.filter(e => e.kind === "pass").length, d = l.length - n;
         const note = [n > 1 ? `${n} ${plural(n, "раз", "раза", "раз")}` : "", d ? `отказ ×${d}` : ""].filter(Boolean).join(", ");
         return `<div class="row ${rep ? "rep" : ""} ${newUsers.has(uid) ? "flash" : ""}"><span class="rn">${esc(who(l[0]).fio)}</span>
           <span class="rt">${note ? note + " · " : ""}${l.map(e => hm(e.ts)).join(", ")}</span></div>`;
@@ -187,7 +212,8 @@ function rD(newUsers) {
 }
 
 function renderAll(newIds = new Set()) {
-  const newUsers = new Set(D.events.filter(e => newIds.has(e.id)).map(e => e.user_id));
+  linkCards();
+  const newUsers = new Set(D.events.filter(e => newIds.has(e.id)).map(uidOf));
   rA(newIds.size > 0); rB(); rC(newIds); rD(newUsers);
   const w = D.meals.find(m => m.key === D.current);
   $("window").innerHTML = w ? `<span class="${mealCls(w.key)}">${esc(w.name)}</span> до ${w.end}` : '<span style="color:var(--muted)">Вне окна питания</span>';
