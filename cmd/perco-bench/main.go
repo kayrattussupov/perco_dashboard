@@ -84,6 +84,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	ctx = perco.Unbudgeted(ctx) // the tool paces itself; the service's budget would distort the load test
 	b := &bench{api: perco.New(cfg.Perco.URL, cfg.Perco.Login, cfg.Perco.Password), devices: cfg.DeviceIDs,
 		out: out, now: time.Now, sleep: sleepCtx, poll: pollEvery}
 

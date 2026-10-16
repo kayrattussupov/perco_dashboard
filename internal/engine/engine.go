@@ -89,12 +89,13 @@ func (e *Engine) Meals() []meals.Meal {
 
 // Run blocks until ctx is cancelled.
 func (e *Engine) Run(ctx context.Context) {
-	go e.every(ctx, time.Duration(e.cfg.StaffRefreshMinutes)*time.Minute, "сотрудники", e.syncStaff)
-	go e.every(ctx, 10*time.Minute, "окна питания", e.loadMeals)
+	bg := perco.Background(ctx) // reads that may wait: the smaller request budget, never ahead of passes
+	go e.every(bg, time.Duration(e.cfg.StaffRefreshMinutes)*time.Minute, "сотрудники", e.syncStaff)
+	go e.every(bg, 10*time.Minute, "окна питания", e.loadMeals)
 	go e.every(ctx, 15*time.Second, "блокировки", e.blocker.Tick)    // first run at start: recover after downtime
 	go e.every(ctx, healthEvery, "контроллер", e.blocker.HealthLoop) // shown in the header; also feeds the write gate
-	go e.every(ctx, blockedEvery, "заблокированные", e.blocker.BlockedLoop)
-	go e.every(ctx, 30*time.Second, "проверки", e.blocker.SelfCheckTick) // a check missed while the PC was off runs at start
+	go e.every(bg, blockedEvery, "заблокированные", e.blocker.BlockedLoop)
+	go e.every(bg, 30*time.Second, "проверки", e.blocker.SelfCheckTick) // a check missed while the PC was off runs at start
 	if e.cfg.BackupReset {
 		go e.every(ctx, 20*time.Second, "резервный сброс", e.backupReset)
 	}
@@ -319,7 +320,7 @@ func (e *Engine) handle(ctx context.Context, ev perco.Event) (bool, error) {
 		return isNew, err
 	}
 	if se.UserID != 0 && !e.st.StaffKnown(se.UserID) {
-		go e.fetchStaff(ctx, se.UserID, se.FIO)
+		go e.fetchStaff(perco.Background(ctx), se.UserID, se.FIO)
 	}
 	if kind == store.KindPass {
 		e.blocker.OnPass(ctx, se, t)

@@ -27,15 +27,96 @@ type Client struct {
 
 	mu    sync.Mutex
 	token string
+
+	sem        chan struct{}
+	urgent     *bucket
+	background *bucket
+	br         breaker
+	m          metrics
 }
+
+const requestTimeout = 15 * time.Second
 
 func New(baseURL, login, password string) *Client {
 	return &Client{
-		base:     strings.TrimRight(baseURL, "/") + "/api",
-		login:    login,
-		password: password,
-		hc:       &http.Client{Timeout: 30 * time.Second},
+		base:       strings.TrimRight(baseURL, "/") + "/api",
+		login:      login,
+		password:   password,
+		hc:         &http.Client{Timeout: requestTimeout},
+		sem:        make(chan struct{}, maxInFlight),
+		urgent:     newBucket(urgentEvery, urgentBurst),
+		background: newBucket(backgroundEvery, backgroundBurst),
 	}
+}
+
+// Stats reports this service's requests to PERCo over the last hour and the breaker state.
+func (c *Client) Stats() Stats {
+	now := time.Now()
+	st := c.m.stats(now)
+	c.br.mu.Lock()
+	if c.br.failures >= breakAfter {
+		st.BreakerOpen = true
+		st.OpenUntil = c.br.openUntil.Format("15:04:05")
+	}
+	st.TimesOpened = c.br.opened
+	c.br.mu.Unlock()
+	return st
+}
+
+// send makes one HTTP request through the guard: budget (reads only), breaker, concurrency limit, metrics.
+// It returns the body and status; a transport error, a timeout or HTTP 5xx counts as a failure of PERCo.
+func (c *Client) send(ctx context.Context, req *http.Request, kind string) ([]byte, int, error) {
+	if req.Method == http.MethodGet && !isUnbudgeted(ctx) {
+		b := c.urgent
+		if isBackground(ctx) {
+			b = c.background
+		}
+		if err := b.wait(ctx); err != nil {
+			return nil, 0, err
+		}
+	}
+	if err := c.br.allow(time.Now()); err != nil {
+		c.m.mu.Lock()
+		c.m.paused++
+		c.m.mu.Unlock()
+		return nil, 0, err
+	}
+	select {
+	case c.sem <- struct{}{}:
+	case <-ctx.Done():
+		c.br.release()
+		return nil, 0, ctx.Err()
+	}
+	start := time.Now()
+	resp, err := c.hc.Do(req)
+	var data []byte
+	status := 0
+	if err == nil {
+		status = resp.StatusCode
+		data, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+	<-c.sem
+	end := time.Now()
+	if err != nil && ctx.Err() != nil {
+		c.br.release() // cancelled by us, not a failure of PERCo
+		return nil, 0, err
+	}
+	failed := err != nil || status >= 500
+	c.br.done(end, failed)
+	c.m.add(sample{at: end, kind: kind, took: end.Sub(start), failed: failed})
+	return data, status, err
+}
+
+// kindOf names a request for the metrics: numbers in the path are replaced by {id}.
+func kindOf(method, path string) string {
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		if _, err := strconv.Atoi(p); err == nil && p != "" {
+			parts[i] = "{id}"
+		}
+	}
+	return method + " " + strings.Join(parts, "/")
 }
 
 type Event struct {
@@ -105,20 +186,19 @@ func (c *Client) authenticate(ctx context.Context) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.hc.Do(req)
+	data, status, err := c.send(ctx, req, "POST /system/auth")
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
 	var out struct {
 		Token string `json:"token"`
 		Error string `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("auth: HTTP %d: %w", resp.StatusCode, err)
+	if err := json.Unmarshal(data, &out); err != nil {
+		return "", fmt.Errorf("auth: HTTP %d: %w", status, err)
 	}
 	if out.Token == "" {
-		return "", fmt.Errorf("auth: HTTP %d: %s", resp.StatusCode, out.Error)
+		return "", fmt.Errorf("auth: HTTP %d: %s", status, out.Error)
 	}
 	return out.Token, nil
 }
@@ -167,21 +247,16 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		resp, err := c.hc.Do(req)
+		data, status, err := c.send(ctx, req, kindOf(method, path))
 		if err != nil {
 			return err
 		}
-		data, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return err
-		}
-		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+		if status == http.StatusUnauthorized && attempt == 0 {
 			c.dropToken()
 			continue
 		}
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("%s %s: HTTP %d: %.300s", method, path, resp.StatusCode, data)
+		if status != http.StatusOK {
+			return fmt.Errorf("%s %s: HTTP %d: %.300s", method, path, status, data)
 		}
 		if out != nil {
 			if err := json.Unmarshal(data, out); err != nil {
