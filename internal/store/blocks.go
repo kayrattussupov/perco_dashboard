@@ -26,6 +26,13 @@ CREATE TABLE IF NOT EXISTS blocks (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS blocks_once ON blocks(user_id, day, meal);
 CREATE INDEX IF NOT EXISTS blocks_state ON blocks(state);
+CREATE TABLE IF NOT EXISTS own_writes (
+	id      INTEGER PRIMARY KEY AUTOINCREMENT,
+	ts      TEXT NOT NULL,
+	user_id INTEGER NOT NULL,
+	blocked INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS own_writes_user ON own_writes(user_id, ts);
 CREATE TABLE IF NOT EXISTS audit (
 	id     INTEGER PRIMARY KEY AUTOINCREMENT,
 	ts     TEXT NOT NULL,
@@ -151,6 +158,20 @@ func (s *Store) OperatorActions(userID int64, sinceTS, self string) ([]OperatorA
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// RecordWrite notes, before the request, that this service is about to set is_block for an employee.
+func (s *Store) RecordWrite(ts string, userID int64, blocked bool) error {
+	_, err := s.db.Exec(`INSERT INTO own_writes(ts,user_id,blocked) VALUES(?,?,?)`, ts, userID, blocked)
+	return err
+}
+
+// HasWrite reports whether this service recorded such a write between fromTS and toTS.
+func (s *Store) HasWrite(userID int64, blocked bool, fromTS, toTS string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM own_writes WHERE user_id=? AND blocked=? AND ts>=? AND ts<=?`,
+		userID, blocked, fromTS, toTS).Scan(&n)
+	return n > 0, err
 }
 
 func (s *Store) Audit(ts, actor, action, detail string) error {

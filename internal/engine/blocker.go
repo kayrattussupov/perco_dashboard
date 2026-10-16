@@ -49,6 +49,7 @@ type blockAPI interface {
 	SetBlocked(ctx context.Context, id int64, blocked bool) error
 	DeviceHealth(ctx context.Context, deviceIDs []int) (perco.DeviceHealth, error)
 	BlockedStaff(ctx context.Context) ([]perco.BlockedPerson, error)
+	DeviceState(ctx context.Context) (perco.DeviceHealth, error)
 }
 
 // Blocker enforces one pass per meal window by blocking an employee in PERCo after the first
@@ -77,6 +78,8 @@ type Blocker struct {
 	blockedNow blockedSnapshot
 
 	heldAt map[int64]time.Time // last PERCo read of an operator-held block; guarded by mu
+
+	linkStable *time.Duration // overrides linkStable (tests)
 }
 
 func (b *Blocker) nowTS() string { return b.now().Format(perco.TimeLayout) }
@@ -119,6 +122,10 @@ func (b *Blocker) SetMode(ctx context.Context, mode, actor string) (released, fa
 		return 0, 0, err
 	}
 	b.st.Audit(b.nowTS(), actor, "mode", mode)
+	if b.st.GetKV(foreignKey) != "" {
+		b.st.SetKV(foreignKey, "") // a person looked at the dashboard and switched the mode: they own it now
+		b.log.Printf("предупреждение о втором экземпляре снято (%s)", actor)
+	}
 	b.log.Printf("режим блокировки: %s (%s)", mode, actor)
 	if mode == ModeOff {
 		released, failed = b.ReleaseAll(ctx, actor, "режим ВЫКЛ")
@@ -188,6 +195,9 @@ func (b *Blocker) OnPass(ctx context.Context, ev store.Event, passAt time.Time) 
 	if mode == ModeOff || ev.UserID == 0 {
 		return
 	}
+	if b.st.GetKV(foreignKey) != "" {
+		return // another writer under our login: no new blocks until a person checks (releases still run)
+	}
 	if mode == ModeTest && !slices.Contains(b.cfg.Blocking.TestUserIDs, ev.UserID) {
 		return
 	}
@@ -241,7 +251,7 @@ func (b *Blocker) OnPass(ctx context.Context, ev store.Event, passAt time.Time) 
 		b.close(&r, store.BlockClosed, "не заблокирован: уже заблокирован оператором")
 		return
 	}
-	if err := b.api.SetBlocked(ctx, ev.UserID, true); err != nil {
+	if err := b.setBlocked(ctx, ev.UserID, true); err != nil {
 		// Unknown whether PERCo applied it; Tick reconciles the pending row against PERCo.
 		r.LastError = err.Error()
 		b.st.UpdateBlock(r)
@@ -325,7 +335,13 @@ func (b *Blocker) checkSettled(ctx context.Context) {
 	if since == "" {
 		return
 	}
-	h, err := b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
+	// The queue is read first (1 request); the per-device error lists only once the queue is empty.
+	h, err := b.api.DeviceState(ctx)
+	b.noteState(h, err)
+	if err != nil || !h.Connected || h.Pending > 0 {
+		return
+	}
+	h, err = b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
 	b.noteHealth(h, err)
 	if err == nil && h.Settled() {
 		b.st.SetKV(settleKey, "")
@@ -421,7 +437,7 @@ func (b *Blocker) release(ctx context.Context, r *store.Block, why string, force
 			b.close(r, store.BlockClosed, "сотрудник неактивен — блокировку не снимаем")
 			return true
 		}
-		if err = b.api.SetBlocked(ctx, r.UserID, false); err == nil {
+		if err = b.setBlocked(ctx, r.UserID, false); err == nil {
 			var still bool
 			if still, _, err = b.api.StaffBlockState(ctx, r.UserID); err == nil && still {
 				err = errors.New("PERCo не подтвердил снятие блокировки")
@@ -564,6 +580,9 @@ func (b *Blocker) Status() (*BlockingStatus, error) {
 	if s.Controller.State == StateOffline {
 		s.Warnings = append(s.Warnings, fmt.Sprintf("Контроллер не на связи с PERCo-Web с %s: проходы по картам и блокировки могут не работать.%s",
 			s.Controller.Since[11:16], withMsg(s.Controller.Message)))
+	}
+	if w := b.foreignWarning(); w != "" {
+		s.Warnings = append(s.Warnings, w)
 	}
 	if s.Effective != ModeOff && b.self == "admin" {
 		s.Warnings = append(s.Warnings, "Служба работает под оператором admin: блокировки, сделанные людьми под admin, будут считаться блокировками службы. Заведите отдельного оператора (например, service) и укажите его в config.yaml.")

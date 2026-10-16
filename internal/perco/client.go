@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,15 +27,96 @@ type Client struct {
 
 	mu    sync.Mutex
 	token string
+
+	sem        chan struct{}
+	urgent     *bucket
+	background *bucket
+	br         breaker
+	m          metrics
 }
+
+const requestTimeout = 15 * time.Second
 
 func New(baseURL, login, password string) *Client {
 	return &Client{
-		base:     strings.TrimRight(baseURL, "/") + "/api",
-		login:    login,
-		password: password,
-		hc:       &http.Client{Timeout: 30 * time.Second},
+		base:       strings.TrimRight(baseURL, "/") + "/api",
+		login:      login,
+		password:   password,
+		hc:         &http.Client{Timeout: requestTimeout},
+		sem:        make(chan struct{}, maxInFlight),
+		urgent:     newBucket(urgentEvery, urgentBurst),
+		background: newBucket(backgroundEvery, backgroundBurst),
 	}
+}
+
+// Stats reports this service's requests to PERCo over the last hour and the breaker state.
+func (c *Client) Stats() Stats {
+	now := time.Now()
+	st := c.m.stats(now)
+	c.br.mu.Lock()
+	if c.br.failures >= breakAfter {
+		st.BreakerOpen = true
+		st.OpenUntil = c.br.openUntil.Format("15:04:05")
+	}
+	st.TimesOpened = c.br.opened
+	c.br.mu.Unlock()
+	return st
+}
+
+// send makes one HTTP request through the guard: budget (reads only), breaker, concurrency limit, metrics.
+// It returns the body and status; a transport error, a timeout or HTTP 5xx counts as a failure of PERCo.
+func (c *Client) send(ctx context.Context, req *http.Request, kind string) ([]byte, int, error) {
+	if req.Method == http.MethodGet && !isUnbudgeted(ctx) {
+		b := c.urgent
+		if isBackground(ctx) {
+			b = c.background
+		}
+		if err := b.wait(ctx); err != nil {
+			return nil, 0, err
+		}
+	}
+	if err := c.br.allow(time.Now()); err != nil {
+		c.m.mu.Lock()
+		c.m.paused++
+		c.m.mu.Unlock()
+		return nil, 0, err
+	}
+	select {
+	case c.sem <- struct{}{}:
+	case <-ctx.Done():
+		c.br.release()
+		return nil, 0, ctx.Err()
+	}
+	start := time.Now()
+	resp, err := c.hc.Do(req)
+	var data []byte
+	status := 0
+	if err == nil {
+		status = resp.StatusCode
+		data, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+	<-c.sem
+	end := time.Now()
+	if err != nil && ctx.Err() != nil {
+		c.br.release() // cancelled by us, not a failure of PERCo
+		return nil, 0, err
+	}
+	failed := err != nil || status >= 500
+	c.br.done(end, failed)
+	c.m.add(sample{at: end, kind: kind, took: end.Sub(start), failed: failed})
+	return data, status, err
+}
+
+// kindOf names a request for the metrics: numbers in the path are replaced by {id}.
+func kindOf(method, path string) string {
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		if _, err := strconv.Atoi(p); err == nil && p != "" {
+			parts[i] = "{id}"
+		}
+	}
+	return method + " " + strings.Join(parts, "/")
 }
 
 type Event struct {
@@ -104,20 +186,19 @@ func (c *Client) authenticate(ctx context.Context) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.hc.Do(req)
+	data, status, err := c.send(ctx, req, "POST /system/auth")
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
 	var out struct {
 		Token string `json:"token"`
 		Error string `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("auth: HTTP %d: %w", resp.StatusCode, err)
+	if err := json.Unmarshal(data, &out); err != nil {
+		return "", fmt.Errorf("auth: HTTP %d: %w", status, err)
 	}
 	if out.Token == "" {
-		return "", fmt.Errorf("auth: HTTP %d: %s", resp.StatusCode, out.Error)
+		return "", fmt.Errorf("auth: HTTP %d: %s", status, out.Error)
 	}
 	return out.Token, nil
 }
@@ -166,21 +247,16 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		resp, err := c.hc.Do(req)
+		data, status, err := c.send(ctx, req, kindOf(method, path))
 		if err != nil {
 			return err
 		}
-		data, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return err
-		}
-		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+		if status == http.StatusUnauthorized && attempt == 0 {
 			c.dropToken()
 			continue
 		}
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("%s %s: HTTP %d: %.300s", method, path, resp.StatusCode, data)
+		if status != http.StatusOK {
+			return fmt.Errorf("%s %s: HTTP %d: %.300s", method, path, status, data)
 		}
 		if out != nil {
 			if err := json.Unmarshal(data, out); err != nil {
@@ -283,6 +359,41 @@ func (c *Client) SetBlocked(ctx context.Context, id int64, blocked bool) error {
 	return nil
 }
 
+// IDs encodings for the "ids" query parameter of the mass-edit endpoint. Which ones PERCo accepts for several
+// ids is not verified yet: callers must read the result back.
+const (
+	IDsComma  = "comma"  // ids=1,2,3
+	IDsJSON   = "json"   // ids=[1,2,3]
+	IDsRepeat = "repeat" // ids=1&ids=2&ids=3
+)
+
+// SetBlockedMany blocks or unblocks several employees in one request.
+func (c *Client) SetBlockedMany(ctx context.Context, ids []int64, blocked bool, format string) error {
+	strs := make([]string, len(ids))
+	for i, id := range ids {
+		strs[i] = strconv.FormatInt(id, 10)
+	}
+	q := url.Values{}
+	switch format {
+	case IDsJSON:
+		q.Set("ids", "["+strings.Join(strs, ",")+"]")
+	case IDsRepeat:
+		q["ids"] = strs
+	default:
+		q.Set("ids", strings.Join(strs, ","))
+	}
+	var out struct {
+		Result string `json:"result"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/users/staff", q, map[string]bool{"is_block": blocked}, &out); err != nil {
+		return err
+	}
+	if out.Result != "ok" {
+		return fmt.Errorf("is_block=%v: ответ PERCo %q", blocked, out.Result)
+	}
+	return nil
+}
+
 // BlockedPerson is an active employee whose is_block flag is set in PERCo.
 type BlockedPerson struct {
 	ID  int64
@@ -328,33 +439,22 @@ type DeviceHealth struct {
 // Settled means PERCo is on line with the controllers and has nothing left to deliver to them.
 func (h DeviceHealth) Settled() bool { return h.Connected && h.Pending == 0 && len(h.Errors) == 0 }
 
-// DeviceHealth reads the controller link state and the not-yet-delivered resources of the given devices.
+// DeviceState reads only the controller link state and PERCo's command queue: one request. Errors stay empty.
+func (c *Client) DeviceState(ctx context.Context) (DeviceHealth, error) {
+	h, _, err := c.deviceState(ctx)
+	return h, err
+}
+
+// DeviceHealth reads the link state and the not-yet-delivered resources of the given devices and of every device
+// PERCo lists: 1 + N requests, for decisions that depend on delivery (settle check, scheduled checks).
 func (c *Client) DeviceHealth(ctx context.Context, deviceIDs []int) (DeviceHealth, error) {
-	var st struct {
-		Items []struct {
-			ID           int    `json:"id"`
-			ConnectState int    `json:"connect_state"`
-			CmdCount     int    `json:"cmd_count"`
-			Message      string `json:"connect_message"`
-		} `json:"items"`
-	}
-	if err := c.do(ctx, http.MethodGet, "/devices/state", nil, nil, &st); err != nil {
+	h, listed, err := c.deviceState(ctx)
+	if err != nil {
 		return DeviceHealth{}, err
 	}
-	h := DeviceHealth{Connected: len(st.Items) > 0}
 	ids := map[int]bool{}
-	for _, d := range deviceIDs {
+	for _, d := range append(slices.Clone(deviceIDs), listed...) {
 		ids[d] = true
-	}
-	for _, it := range st.Items {
-		ids[it.ID] = true
-		h.Pending += it.CmdCount
-		if it.ConnectState != 1 {
-			h.Connected = false
-		}
-		if h.Message == "" || it.ConnectState != 1 {
-			h.Message = it.Message
-		}
 	}
 	for id := range ids {
 		var errs []struct {
@@ -368,6 +468,33 @@ func (c *Client) DeviceHealth(ctx context.Context, deviceIDs []int) (DeviceHealt
 		}
 	}
 	return h, nil
+}
+
+func (c *Client) deviceState(ctx context.Context) (DeviceHealth, []int, error) {
+	var st struct {
+		Items []struct {
+			ID           int    `json:"id"`
+			ConnectState int    `json:"connect_state"`
+			CmdCount     int    `json:"cmd_count"`
+			Message      string `json:"connect_message"`
+		} `json:"items"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/devices/state", nil, nil, &st); err != nil {
+		return DeviceHealth{}, nil, err
+	}
+	h := DeviceHealth{Connected: len(st.Items) > 0}
+	var ids []int
+	for _, it := range st.Items {
+		ids = append(ids, it.ID)
+		h.Pending += it.CmdCount
+		if it.ConnectState != 1 {
+			h.Connected = false
+		}
+		if h.Message == "" || it.ConnectState != 1 {
+			h.Message = it.Message
+		}
+	}
+	return h, ids, nil
 }
 
 // ResetAntipass sends "Сброс зональности" (cmdType 6) to a lock device.

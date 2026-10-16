@@ -149,7 +149,7 @@ td.num.warn{color:var(--warn)}
 .pill.forced{text-decoration:line-through}
 .pill.static{cursor:default}
 .pill.st-ok{background:var(--ok-bg);color:var(--ok);border-color:var(--ok)}
-.pill.st-syncing{background:var(--amber-bg);color:var(--amber);border-color:var(--amber)}
+.pill.st-syncing,.pill.st-settling{background:var(--amber-bg);color:var(--amber);border-color:var(--amber)}
 .pill.st-offline,.pill.st-unreachable{background:var(--warn-bg);color:var(--warn);border-color:var(--warn)}
 .lcol{display:flex;flex-direction:column;gap:20px;align-self:start}
 .blk h3{margin:0 0 8px;font-size:15px;display:flex;justify-content:space-between;align-items:baseline;gap:8px}
@@ -200,6 +200,7 @@ dialog input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid va
     <div class="lcol">
       <div class="card" id="aCard"></div>
       <div class="card blk" id="blkPanel"></div>
+      <div class="card blk" id="svcPanel"></div>
     </div>
     <div>
       <input class="search" id="aSearch" type="search" placeholder="Поиск по фамилии" aria-label="Поиск по фамилии">

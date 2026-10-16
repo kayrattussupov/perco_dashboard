@@ -85,6 +85,10 @@ func Handler(e *engine.Engine, lg *log.Logger) http.Handler {
 		w.Write(img)
 	})
 
+	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, e.Health())
+	})
+
 	bl := e.Blocker()
 	guard := newPINGuard()
 	mux.HandleFunc("GET /api/blocking", func(w http.ResponseWriter, r *http.Request) {

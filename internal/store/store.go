@@ -66,6 +66,12 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// BackupTo writes a consistent copy of the database to path (which must not exist) while the service runs.
+func (s *Store) BackupTo(path string) error {
+	_, err := s.db.Exec(`VACUUM INTO ?`, path)
+	return err
+}
+
 // Kinds of stored events.
 const (
 	KindPass  = "pass"
