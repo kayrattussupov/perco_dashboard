@@ -62,6 +62,7 @@ func New(cfg *config.Config, pc *perco.Client, st *store.Store, lg *log.Logger) 
 			e.meals = ms
 		}
 	}
+	e.blocker.startWriteJournal()
 	if err := st.MarkDeny(append(slices.Clone(builtinDenyIDs), cfg.DenyEventIDs...)); err != nil {
 		lg.Printf("переклассификация отказов: %v", err)
 	}
@@ -325,6 +326,9 @@ func (e *Engine) handle(ctx context.Context, ev perco.Event) (bool, error) {
 	}
 	if kind == store.KindPass {
 		e.blocker.OnPass(ctx, se, t)
+	}
+	if kind == store.KindStaffOp {
+		e.blocker.NoteSelfAction(se)
 	}
 	return true, nil
 }
