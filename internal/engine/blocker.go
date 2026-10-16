@@ -49,6 +49,7 @@ type blockAPI interface {
 	SetBlocked(ctx context.Context, id int64, blocked bool) error
 	DeviceHealth(ctx context.Context, deviceIDs []int) (perco.DeviceHealth, error)
 	BlockedStaff(ctx context.Context) ([]perco.BlockedPerson, error)
+	DeviceState(ctx context.Context) (perco.DeviceHealth, error)
 }
 
 // Blocker enforces one pass per meal window by blocking an employee in PERCo after the first
@@ -77,6 +78,8 @@ type Blocker struct {
 	blockedNow blockedSnapshot
 
 	heldAt map[int64]time.Time // last PERCo read of an operator-held block; guarded by mu
+
+	linkStable *time.Duration // overrides linkStable (tests)
 }
 
 func (b *Blocker) nowTS() string { return b.now().Format(perco.TimeLayout) }
@@ -325,7 +328,13 @@ func (b *Blocker) checkSettled(ctx context.Context) {
 	if since == "" {
 		return
 	}
-	h, err := b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
+	// The queue is read first (1 request); the per-device error lists only once the queue is empty.
+	h, err := b.api.DeviceState(ctx)
+	b.noteState(h, err)
+	if err != nil || !h.Connected || h.Pending > 0 {
+		return
+	}
+	h, err = b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
 	b.noteHealth(h, err)
 	if err == nil && h.Settled() {
 		b.st.SetKV(settleKey, "")

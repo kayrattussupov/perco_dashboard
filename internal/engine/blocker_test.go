@@ -25,7 +25,8 @@ type fakePERCo struct {
 	pending      int      // commands PERCo has not delivered yet
 	devErrors    []string // resources not transferred
 	ignoreUnlock bool     // PERCo says "ok" to an unblock but the flag stays set
-	healthCalls  int      // DeviceHealth requests made
+	healthCalls  int      // DeviceHealth and DeviceState requests made
+	fullCalls    int      // DeviceHealth requests (with per-device error lists)
 }
 
 func (f *fakePERCo) BlockedStaff(_ context.Context) ([]perco.BlockedPerson, error) {
@@ -43,10 +44,18 @@ func (f *fakePERCo) BlockedStaff(_ context.Context) ([]perco.BlockedPerson, erro
 
 func (f *fakePERCo) DeviceHealth(_ context.Context, _ []int) (perco.DeviceHealth, error) {
 	f.healthCalls++
+	f.fullCalls++
 	if f.fail != nil {
 		return perco.DeviceHealth{}, f.fail
 	}
 	return perco.DeviceHealth{Connected: !f.offline, Pending: f.pending, Errors: f.devErrors}, nil
+}
+
+func (f *fakePERCo) DeviceState(ctx context.Context) (perco.DeviceHealth, error) {
+	f.fullCalls--
+	h, err := f.DeviceHealth(ctx, nil)
+	h.Errors = nil
+	return h, err
 }
 
 func (f *fakePERCo) StaffBlockState(_ context.Context, id int64) (bool, bool, error) {
@@ -105,7 +114,7 @@ func newRig(t *testing.T, mode string) *rig {
 		now: time.Date(2026, 10, 12, 7, 31, 0, 0, tz), ok: true, next: 1}
 	r.b = &Blocker{cfg: cfg, api: r.api, st: st, log: log.New(io.Discard, "", 0), loc: tz,
 		now: func() time.Time { return r.now }, meals: func() []meals.Meal { return live },
-		healthy: func() bool { return r.ok }, notify: func() {}, self: "meal-service"}
+		healthy: func() bool { return r.ok }, notify: func() {}, self: "meal-service", linkStable: new(time.Duration)}
 	st.SetKV(modeKey, mode)
 	return r
 }

@@ -210,7 +210,7 @@ viewFromHash();
 const MODE_TEXT = {off: "ВЫКЛ", test: "ТЕСТ", on: "ВКЛ"};
 const STATE_TEXT = {pending: "применяется…", blocked: "заблокирован", operator: "заблокирован оператором"};
 // PERCo ↔ controller link: shown in the header so an outage is visible at once, with details in the tooltip.
-const LINK_TEXT = {ok: "PERCo: на связи", syncing: "PERCo: передача…", offline: "Контроллер: нет связи",
+const LINK_TEXT = {ok: "PERCo: на связи", syncing: "PERCo: передача…", settling: "PERCo: связь восстановлена…", offline: "Контроллер: нет связи",
   unreachable: "PERCo: нет связи", unknown: "PERCo: нет данных"};
 function renderLink() {
   const pill = $("prcPill"), c = BL && BL.controller;

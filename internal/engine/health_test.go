@@ -65,7 +65,7 @@ func TestControllerStatusStates(t *testing.T) {
 		t.Fatalf("recovered: %+v", st)
 	}
 
-	r.now = r.now.Add(time.Minute) // the loop has stopped: old data is not shown as current
+	r.now = r.now.Add(healthStale + time.Second) // the loop has stopped: old data is not shown as current
 	if st := r.b.Controller(); st.State != StateNoData {
 		t.Fatalf("stale reading: %s", st.State)
 	}
@@ -151,5 +151,78 @@ func TestBlockedLoopSkipsWhilePERCoDown(t *testing.T) {
 	r.b.BlockedLoop(context.Background())
 	if s, _ := r.b.Status(); !s.Blocked.Known || s.Blocked.Count != 1 {
 		t.Fatalf("PERCo is back: %+v", s.Blocked)
+	}
+}
+
+// The background loop costs one request; the per-device error lists are read only every errorsEvery
+// and are kept in between.
+func TestHealthLoopReadsErrorsRarely(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.api.devErrors = []string{"Карта 123"}
+	r.health(t) // first reading is full
+	full := r.api.healthCalls
+	for i := 0; i < 5; i++ {
+		r.now = r.now.Add(healthEvery)
+		if st := r.health(t); len(st.Errors) != 1 {
+			t.Fatalf("errors of the last full reading must be kept: %+v", st)
+		}
+	}
+	if r.api.healthCalls != full+5 {
+		t.Fatalf("state-only readings expected: %d calls", r.api.healthCalls-full)
+	}
+	if r.api.fullCalls != 1 {
+		t.Fatalf("errors read %d times within %s", r.api.fullCalls, errorsEvery)
+	}
+	r.now = r.now.Add(errorsEvery)
+	r.health(t)
+	if r.api.fullCalls != 2 {
+		t.Fatal("errors must be re-read after errorsEvery")
+	}
+}
+
+// After an outage writes wait until the link has stayed up for linkStable; a new break restarts the wait.
+func TestLinkMustBeStableBeforeWrites(t *testing.T) {
+	r := newRig(t, ModeOn)
+	stable := 2 * time.Minute
+	r.b.linkStable = &stable
+	ctx := context.Background()
+	r.health(t)
+	if r.b.linkUp(ctx) {
+		t.Fatal("a link seen for the first time is not yet stable")
+	}
+	if st := r.b.Controller(); st.State != StateWaiting {
+		t.Fatalf("state %s, want %s", st.State, StateWaiting)
+	}
+	r.now = r.now.Add(time.Minute)
+	r.api.offline = true
+	r.health(t)
+	r.now = r.now.Add(30 * time.Second)
+	r.api.offline = false
+	r.health(t)
+	r.now = r.now.Add(90 * time.Second)
+	if r.b.linkUp(ctx) {
+		t.Fatal("the break restarted the wait: 90 s is not enough")
+	}
+	r.now = r.now.Add(31 * time.Second)
+	if !r.b.linkUp(ctx) {
+		t.Fatal("link up for over 2 min must allow writes")
+	}
+	r.pass(900)
+	if !r.api.blocked[900] {
+		t.Fatal("a pass on a stable link must block")
+	}
+}
+
+// While the controller is off line a burst of passes reuses the negative reading instead of asking PERCo each time.
+func TestLinkDownReadingIsReused(t *testing.T) {
+	r := newRig(t, ModeOn)
+	r.api.offline = true
+	r.health(t)
+	calls := r.api.healthCalls
+	for i := 0; i < 10; i++ {
+		r.b.linkUp(context.Background())
+	}
+	if r.api.healthCalls != calls {
+		t.Fatalf("%d extra requests while off line", r.api.healthCalls-calls)
 	}
 }

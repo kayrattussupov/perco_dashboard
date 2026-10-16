@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -363,33 +364,22 @@ type DeviceHealth struct {
 // Settled means PERCo is on line with the controllers and has nothing left to deliver to them.
 func (h DeviceHealth) Settled() bool { return h.Connected && h.Pending == 0 && len(h.Errors) == 0 }
 
-// DeviceHealth reads the controller link state and the not-yet-delivered resources of the given devices.
+// DeviceState reads only the controller link state and PERCo's command queue: one request. Errors stay empty.
+func (c *Client) DeviceState(ctx context.Context) (DeviceHealth, error) {
+	h, _, err := c.deviceState(ctx)
+	return h, err
+}
+
+// DeviceHealth reads the link state and the not-yet-delivered resources of the given devices and of every device
+// PERCo lists: 1 + N requests, for decisions that depend on delivery (settle check, scheduled checks).
 func (c *Client) DeviceHealth(ctx context.Context, deviceIDs []int) (DeviceHealth, error) {
-	var st struct {
-		Items []struct {
-			ID           int    `json:"id"`
-			ConnectState int    `json:"connect_state"`
-			CmdCount     int    `json:"cmd_count"`
-			Message      string `json:"connect_message"`
-		} `json:"items"`
-	}
-	if err := c.do(ctx, http.MethodGet, "/devices/state", nil, nil, &st); err != nil {
+	h, listed, err := c.deviceState(ctx)
+	if err != nil {
 		return DeviceHealth{}, err
 	}
-	h := DeviceHealth{Connected: len(st.Items) > 0}
 	ids := map[int]bool{}
-	for _, d := range deviceIDs {
+	for _, d := range append(slices.Clone(deviceIDs), listed...) {
 		ids[d] = true
-	}
-	for _, it := range st.Items {
-		ids[it.ID] = true
-		h.Pending += it.CmdCount
-		if it.ConnectState != 1 {
-			h.Connected = false
-		}
-		if h.Message == "" || it.ConnectState != 1 {
-			h.Message = it.Message
-		}
 	}
 	for id := range ids {
 		var errs []struct {
@@ -403,6 +393,33 @@ func (c *Client) DeviceHealth(ctx context.Context, deviceIDs []int) (DeviceHealt
 		}
 	}
 	return h, nil
+}
+
+func (c *Client) deviceState(ctx context.Context) (DeviceHealth, []int, error) {
+	var st struct {
+		Items []struct {
+			ID           int    `json:"id"`
+			ConnectState int    `json:"connect_state"`
+			CmdCount     int    `json:"cmd_count"`
+			Message      string `json:"connect_message"`
+		} `json:"items"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/devices/state", nil, nil, &st); err != nil {
+		return DeviceHealth{}, nil, err
+	}
+	h := DeviceHealth{Connected: len(st.Items) > 0}
+	var ids []int
+	for _, it := range st.Items {
+		ids = append(ids, it.ID)
+		h.Pending += it.CmdCount
+		if it.ConnectState != 1 {
+			h.Connected = false
+		}
+		if h.Message == "" || it.ConnectState != 1 {
+			h.Message = it.Message
+		}
+	}
+	return h, ids, nil
 }
 
 // ResetAntipass sends "Сброс зональности" (cmdType 6) to a lock device.

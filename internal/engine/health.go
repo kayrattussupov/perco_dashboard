@@ -10,15 +10,18 @@ import (
 )
 
 const (
-	healthEvery  = 15 * time.Second // how often the PERCo ↔ controller link is read in the background
-	healthStale  = 45 * time.Second // older data is shown as "no data"
-	linkCacheTTL = 3 * time.Second  // a "controller connected" reading is reused this long by the write gate
+	healthEvery  = 30 * time.Second // how often the PERCo ↔ controller link is read in the background (1 request)
+	healthStale  = 90 * time.Second // older data is shown as "no data"
+	linkCacheTTL = 5 * time.Second  // a reading is reused this long by the write gate
+	errorsEvery  = 5 * time.Minute  // the not-transferred resources (1 request per device) are re-read this often
+	linkStable   = 2 * time.Minute  // writes resume only after the link has been up this long (it flapped on 14–15.10)
 )
 
 // States of the PERCo ↔ controller link shown on the dashboard.
 const (
 	StateOK      = "ok"
 	StateSyncing = "syncing"     // connected, PERCo still delivering changes to the controller
+	StateWaiting = "settling"    // connected again, waiting for the link to prove stable before writing
 	StateOffline = "offline"     // PERCo-Web is up, the controller is not connected to it
 	StateNoPERCo = "unreachable" // this service cannot reach PERCo-Web
 	StateNoData  = "unknown"     // no fresh reading (the service has just started)
@@ -31,6 +34,9 @@ type healthState struct {
 	at    time.Time
 	key   string    // state + details; a change of key is logged and pushed to the dashboard
 	since time.Time // when the current state began
+
+	errorsAt time.Time // when the not-transferred resources were last read
+	upSince  time.Time // since when the controller has been connected without a break; zero while it is not
 }
 
 // ControllerStatus is what the dashboard shows about PERCo and the controller.
@@ -46,25 +52,52 @@ type ControllerStatus struct {
 
 // HealthLoop reads the link state in the background. It never returns an error: a failed reading is itself the
 // state shown on the dashboard (and logged once when it changes), not something to retry noisily.
+// Usually it is one request (the link state); the per-device error lists are re-read every errorsEvery.
 func (b *Blocker) HealthLoop(ctx context.Context) error {
-	h, err := b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
-	if ctx.Err() != nil {
+	b.hmu.Lock()
+	full := b.now().Sub(b.health.errorsAt) >= errorsEvery
+	b.hmu.Unlock()
+	if full {
+		h, err := b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
+		if ctx.Err() == nil {
+			b.noteHealth(h, err)
+		}
 		return nil
 	}
-	b.noteHealth(h, err)
+	h, err := b.api.DeviceState(ctx)
+	if ctx.Err() == nil {
+		b.noteState(h, err)
+	}
 	return nil
 }
 
-// noteHealth stores a reading. A change of state is logged and pushed to the dashboard at once.
-func (b *Blocker) noteHealth(h perco.DeviceHealth, err error) {
+// noteHealth stores a full reading (state and error lists). A change of state is logged and pushed at once.
+func (b *Blocker) noteHealth(h perco.DeviceHealth, err error) { b.note(h, err, true) }
+
+// noteState stores a state-only reading; the error lists of the last full reading are kept.
+func (b *Blocker) noteState(h perco.DeviceHealth, err error) { b.note(h, err, false) }
+
+func (b *Blocker) note(h perco.DeviceHealth, err error, full bool) {
 	now := b.now()
 	b.hmu.Lock()
+	if !full {
+		h.Errors = b.health.h.Errors
+	}
 	b.health.at = now
 	b.health.h, b.health.err = h, ""
 	if err != nil {
 		b.health.h, b.health.err = perco.DeviceHealth{}, err.Error()
+	} else if full {
+		b.health.errorsAt = now
 	}
-	st := statusOf(b.health, now)
+	if err == nil && h.Connected {
+		if b.health.upSince.IsZero() {
+			b.health.upSince = now
+		}
+	} else {
+		b.health.upSince = time.Time{}
+	}
+	st := statusOf(b.health, now, b.stableFor())
 	key := st.State + "|" + st.Message + "|" + strings.Join(st.Errors, ",")
 	changed := key != b.health.key
 	if changed {
@@ -82,30 +115,44 @@ func (b *Blocker) noteHealth(h perco.DeviceHealth, err error) {
 
 // linkUp reports whether PERCo-Web is connected to the controllers. Writes to PERCo are made only then:
 // a change accepted while the controller is off line reaches it later, out of order, and cards can be lost.
-// The background reading is reused for linkCacheTTL, so a burst of passes or a mass release pays no extra
-// PERCo request per employee; only a positive reading is reused.
+// The link must also have been up for linkStable without a break: a flapping link loses changes.
+// Any reading is reused for linkCacheTTL, so a burst of passes or a mass release pays no extra
+// PERCo request per employee, also while the controller is off line.
 func (b *Blocker) linkUp(ctx context.Context) bool {
 	now := b.now()
 	b.hmu.Lock()
 	age := now.Sub(b.health.at)
-	fresh := b.health.err == "" && b.health.h.Connected && age >= 0 && age < linkCacheTTL
+	fresh := !b.health.at.IsZero() && age >= 0 && age < linkCacheTTL
 	b.hmu.Unlock()
-	if fresh {
-		return true
+	if !fresh {
+		h, err := b.api.DeviceState(ctx)
+		b.noteState(h, err)
 	}
-	h, err := b.api.DeviceHealth(ctx, b.cfg.DeviceIDs)
-	b.noteHealth(h, err)
-	return err == nil && h.Connected
+	b.hmu.Lock()
+	defer b.hmu.Unlock()
+	return linkReady(b.health, b.now(), b.stableFor())
+}
+
+// stableFor is how long the link must stay up before writes; tests set Blocker.linkStable to 0.
+func (b *Blocker) stableFor() time.Duration {
+	if b.linkStable != nil {
+		return *b.linkStable
+	}
+	return linkStable
+}
+
+func linkReady(s healthState, now time.Time, stable time.Duration) bool {
+	return s.err == "" && s.h.Connected && !s.upSince.IsZero() && now.Sub(s.upSince) >= stable
 }
 
 // Controller returns the current link state for the dashboard.
 func (b *Blocker) Controller() ControllerStatus {
 	b.hmu.Lock()
 	defer b.hmu.Unlock()
-	return statusOf(b.health, b.now())
+	return statusOf(b.health, b.now(), b.stableFor())
 }
 
-func statusOf(s healthState, now time.Time) ControllerStatus {
+func statusOf(s healthState, now time.Time, stable time.Duration) ControllerStatus {
 	st := ControllerStatus{Errors: []string{}, Message: s.h.Message, Pending: s.h.Pending}
 	st.Errors = append(st.Errors, s.h.Errors...)
 	if !s.at.IsZero() {
@@ -122,6 +169,10 @@ func statusOf(s healthState, now time.Time) ControllerStatus {
 		st.State, st.Text = StateNoPERCo, "PERCo-Web недоступен: "+s.err
 	case !s.h.Connected:
 		st.State, st.Text = StateOffline, "Контроллер не на связи с PERCo-Web"+withMsg(s.h.Message)
+	case !linkReady(s, now, stable):
+		left := stable - now.Sub(s.upSince)
+		st.State = StateWaiting
+		st.Text = fmt.Sprintf("Контроллер снова на связи, запись в PERCo через %d с, если связь не прервётся", int(left.Seconds()+0.5))
 	case s.h.Pending > 0 || len(s.h.Errors) > 0:
 		st.State = StateSyncing
 		st.Text = fmt.Sprintf("Контроллер на связи, идёт передача изменений (в очереди: %d", s.h.Pending)
