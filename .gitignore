@@ -6,3 +6,4 @@ perco-meal.exe
 *.log.1
 perco-bench.exe
 bench-*.txt
+deploy/

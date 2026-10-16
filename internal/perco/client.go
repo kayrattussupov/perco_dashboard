@@ -269,6 +269,33 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 	return errors.New("unauthorized")
 }
 
+// GetRaw reads any path of the PERCo-Web server (relative to its root, e.g. "/api-docs" or "/api/users/staff/960")
+// and returns the body as is. Read-only discovery for perco-bench; the service itself does not use it.
+func (c *Client) GetRaw(ctx context.Context, rootPath string) ([]byte, int, error) {
+	root := strings.TrimSuffix(c.base, "/api")
+	for attempt := 0; attempt < 2; attempt++ {
+		tok, err := c.currentToken(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, root+rootPath, nil)
+		if err != nil {
+			return nil, 0, err
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+		data, status, err := c.send(ctx, req, "GET (разведка)")
+		if err != nil {
+			return nil, 0, err
+		}
+		if status == http.StatusUnauthorized && attempt == 0 {
+			c.dropToken()
+			continue
+		}
+		return data, status, nil
+	}
+	return nil, http.StatusUnauthorized, errors.New("unauthorized")
+}
+
 // Events returns one page of the system event log, oldest id first.
 func (c *Client) Events(ctx context.Context, from, to time.Time, page, rows int) ([]Event, error) {
 	q := url.Values{

@@ -5,6 +5,7 @@
 //	perco-bench.exe -ids 960,961,962,963,964 -yes        block/unblock the batch, measure each stage
 //	perco-bench.exe -load -yes                           step read load 1 → 2 → 4 requests/s, stops on slowdown
 //	perco-bench.exe -find Тест                           list employees whose name contains the text (read only)
+//	perco-bench.exe -discover                            save PERCo's API description, list block/end-date methods (read only)
 package main
 
 import (
@@ -66,6 +67,7 @@ func main() {
 	load := flag.Bool("load", false, "проверка нагрузки чтением вместо блокировок")
 	steps := flag.String("steps", "1,2,4", "ступени нагрузки, запросов в секунду (не больше 5)")
 	stepDur := flag.Duration("step", 30*time.Second, "длительность одной ступени")
+	disc := flag.Bool("discover", false, "сохранить описание API PERCo и показать методы про блокировку и даты (только чтение)")
 	find := flag.String("find", "", "показать id сотрудников, в ФИО которых есть этот текст (только чтение)")
 	yes := flag.Bool("yes", false, "выполнить; без флага только проверки, ничего не пишется")
 	flag.Parse()
@@ -90,7 +92,13 @@ func main() {
 
 	out.Printf("perco-bench: PERCo %s, оператор %s, отчёт %s", cfg.Perco.URL, cfg.Perco.Login, report)
 	code := 0
-	if *find != "" {
+	if *disc {
+		id := int64(960)
+		if len(cfg.Blocking.TestUserIDs) > 0 {
+			id = cfg.Blocking.TestUserIDs[0]
+		}
+		code = discover(ctx, perco.New(cfg.Perco.URL, cfg.Perco.Login, cfg.Perco.Password), id, filepath.Dir(*cfgPath), out)
+	} else if *find != "" {
 		code = findStaff(ctx, perco.New(cfg.Perco.URL, cfg.Perco.Login, cfg.Perco.Password), *find, out)
 	} else if *load {
 		code = b.runLoad(ctx, *steps, *stepDur, *yes)
